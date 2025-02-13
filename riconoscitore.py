@@ -1,6 +1,6 @@
 import cv2
 
-image_path = "v5.jpg" # path per l'immagine 
+image_path = "images/v5.jpg" # path per l'immagine 
 
 def apply_colormap(image_path, colormap=cv2.COLORMAP_JET):
     # Carica l'immagine in scala di grigi
