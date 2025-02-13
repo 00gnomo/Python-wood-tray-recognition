@@ -1,6 +1,6 @@
 import cv2
 
-image_path = "images/v5.jpg" # path per l'immagine 
+image_path = "images/v5.jpg"  # Percorso per l'immagine
 
 def apply_colormap(image_path, colormap=cv2.COLORMAP_JET):
     # Carica l'immagine in scala di grigi
@@ -28,6 +28,7 @@ def apply_colormap(image_path, colormap=cv2.COLORMAP_JET):
     
     cv2.resizeWindow("Originale", new_width, new_height)
     cv2.resizeWindow("Colormap Applicata", new_width, new_height)
+    cv2.resizeWindow("Colormap Controller", 400, 60)  # Ridimensiona la finestra controller
     
     def update_colormap(val):
         new_colormap = val % 12  # OpenCV ha 12 colormap predefiniti
@@ -43,7 +44,5 @@ def apply_colormap(image_path, colormap=cv2.COLORMAP_JET):
     # Attendi la chiusura della finestra
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
-# Percorso dell'immagine da caricare
 
 apply_colormap(image_path)
