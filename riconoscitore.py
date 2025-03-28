@@ -35,10 +35,10 @@ class RiconoscitoreDifetti:
         self.soglia_difetti = 5.0
         
         # Valore soglia colore scuro (0-255)
-        self.soglia_colore = 50
+        self.soglia_colore_scuro = 50
         
-        # Valore soglia per zone rosse (0-255)
-        self.soglia_rosso = 200
+        # Valore soglia per zone chiare/rosse (0-255)
+        self.soglia_colore_chiaro = 200
         
         # Percorso dell'immagine corrente
         self.image_path = None
@@ -99,34 +99,34 @@ class RiconoscitoreDifetti:
         process_button = ttk.Button(control_frame, text="Elabora Immagine", command=self.process_image)
         process_button.pack(fill=tk.X, padx=10, pady=5)
         
-        # Soglia per la sensibilità colore (SCURO)
-        color_frame = ttk.LabelFrame(control_frame, text="Sensibilità Colore")
-        color_frame.pack(fill=tk.X, padx=10, pady=10)
+        # Soglia per la sensibilità colore SCURO
+        dark_frame = ttk.LabelFrame(control_frame, text="Sensibilità Zone Scure")
+        dark_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        self.color_var = tk.IntVar(value=self.soglia_colore)
-        color_scale = ttk.Scale(color_frame, from_=0, to=255, 
-                               variable=self.color_var, 
-                               command=self.update_color_threshold)
-        color_scale.pack(fill=tk.X, padx=5, pady=5)
+        self.dark_var = tk.IntVar(value=self.soglia_colore_scuro)
+        dark_scale = ttk.Scale(dark_frame, from_=0, to=255, 
+                              variable=self.dark_var, 
+                              command=self.update_dark_threshold)
+        dark_scale.pack(fill=tk.X, padx=5, pady=5)
         
-        self.color_label = ttk.Label(color_frame, text=f"Soglia colore: {self.soglia_colore}")
-        self.color_label.pack(pady=5)
+        self.dark_label = ttk.Label(dark_frame, text=f"Soglia zone scure: {self.soglia_colore_scuro}")
+        self.dark_label.pack(pady=5)
         
-        # Soglia per la sensibilità al rosso (NUOVO)
-        red_frame = ttk.LabelFrame(control_frame, text="Sensibilità Zone Rosse")
-        red_frame.pack(fill=tk.X, padx=10, pady=10)
+        # Soglia per la sensibilità alle zone CHIARE/ROSSE
+        bright_frame = ttk.LabelFrame(control_frame, text="Sensibilità Zone Chiare/Rosse")
+        bright_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        self.red_var = tk.IntVar(value=self.soglia_rosso)
-        red_scale = ttk.Scale(red_frame, from_=100, to=255, 
-                            variable=self.red_var, 
-                            command=self.update_red_threshold)
-        red_scale.pack(fill=tk.X, padx=5, pady=5)
+        self.bright_var = tk.IntVar(value=self.soglia_colore_chiaro)
+        bright_scale = ttk.Scale(bright_frame, from_=100, to=255, 
+                                variable=self.bright_var, 
+                                command=self.update_bright_threshold)
+        bright_scale.pack(fill=tk.X, padx=5, pady=5)
         
-        self.red_label = ttk.Label(red_frame, text=f"Soglia rosso: {self.soglia_rosso}")
-        self.red_label.pack(pady=5)
+        self.bright_label = ttk.Label(bright_frame, text=f"Soglia zone chiare: {self.soglia_colore_chiaro}")
+        self.bright_label.pack(pady=5)
         
-        # Soglia per il rilevamento dei difetti
-        threshold_frame = ttk.LabelFrame(control_frame, text="Soglia Difetti")
+        # Soglia per il rilevamento dei difetti complessivi
+        threshold_frame = ttk.LabelFrame(control_frame, text="Soglia Difetti Totali")
         threshold_frame.pack(fill=tk.X, padx=10, pady=10)
         
         self.threshold_var = tk.DoubleVar(value=self.soglia_difetti)
@@ -155,10 +155,13 @@ class RiconoscitoreDifetti:
         dark_area_label = ttk.Label(results_frame, textvariable=self.dark_area_var)
         dark_area_label.pack(anchor=tk.W, padx=5, pady=2)
         
-        # Aggiunta visualizzazione area rossa
-        self.red_area_var = tk.StringVar(value="Area rossa: N/A")
-        red_area_label = ttk.Label(results_frame, textvariable=self.red_area_var)
-        red_area_label.pack(anchor=tk.W, padx=5, pady=2)
+        self.bright_area_var = tk.StringVar(value="Area chiara: N/A")
+        bright_area_label = ttk.Label(results_frame, textvariable=self.bright_area_var)
+        bright_area_label.pack(anchor=tk.W, padx=5, pady=2)
+        
+        self.total_area_var = tk.StringVar(value="Area difettata totale: N/A")
+        total_area_label = ttk.Label(results_frame, textvariable=self.total_area_var)
+        total_area_label.pack(anchor=tk.W, padx=5, pady=2)
         
         self.status_var = tk.StringVar(value="Stato: N/A")
         self.status_label = ttk.Label(results_frame, textvariable=self.status_var)
@@ -183,20 +186,20 @@ class RiconoscitoreDifetti:
         if self.original_image is not None and "Zone Scure" in self.processed_images:
             self.process_image()
     
-    def update_color_threshold(self, event=None):
-        """Aggiorna l'etichetta della soglia colore quando viene modificata."""
-        self.soglia_colore = self.color_var.get()
-        self.color_label.config(text=f"Soglia colore: {self.soglia_colore}")
+    def update_dark_threshold(self, event=None):
+        """Aggiorna l'etichetta della soglia colore scuro quando viene modificata."""
+        self.soglia_colore_scuro = self.dark_var.get()
+        self.dark_label.config(text=f"Soglia zone scure: {self.soglia_colore_scuro}")
         # Rielabora l'immagine se è già stata caricata
         if self.original_image is not None and "Zone Scure" in self.processed_images:
             self.process_image()
     
-    def update_red_threshold(self, event=None):
-        """Aggiorna l'etichetta della soglia rosso quando viene modificata."""
-        self.soglia_rosso = self.red_var.get()
-        self.red_label.config(text=f"Soglia rosso: {self.soglia_rosso}")
+    def update_bright_threshold(self, event=None):
+        """Aggiorna l'etichetta della soglia colore chiaro quando viene modificata."""
+        self.soglia_colore_chiaro = self.bright_var.get()
+        self.bright_label.config(text=f"Soglia zone chiare: {self.soglia_colore_chiaro}")
         # Rielabora l'immagine se è già stata caricata
-        if self.original_image is not None and "Zone Scure" in self.processed_images:
+        if self.original_image is not None and "Zone Chiare" in self.processed_images:
             self.process_image()
     
     def load_image(self):
@@ -242,7 +245,8 @@ class RiconoscitoreDifetti:
             
             # Reset dei risultati di analisi
             self.dark_area_var.set("Area scura: N/A")
-            self.red_area_var.set("Area rossa: N/A")
+            self.bright_area_var.set("Area chiara: N/A")
+            self.total_area_var.set("Area difettata totale: N/A")
             self.status_var.set("Stato: N/A")
             
         except Exception as e:
@@ -269,38 +273,35 @@ class RiconoscitoreDifetti:
             colored_image = cv2.applyColorMap(gray_image, colormap)
             self.processed_images["Colormap JET"] = colored_image
             
-            # Rileva zone scure - usa la soglia colore impostata dall'utente
-            dark_image, dark_mask, dark_percent = self.detect_dark_regions(gray_image, self.soglia_colore)
+            # Rileva zone scure
+            dark_image, dark_mask, dark_percent = self.detect_dark_regions(gray_image, self.soglia_colore_scuro)
             self.processed_images["Zone Scure"] = dark_image
             
-            # Rileva zone rosse nella colormap Jet
-            red_image, red_mask, red_percent = self.detect_red_regions(colored_image, self.soglia_rosso)
-            self.processed_images["Zone Rosse"] = red_image
+            # Rileva zone chiare/rosse
+            bright_image, bright_mask, bright_percent = self.detect_bright_regions(gray_image, self.soglia_colore_chiaro)
+            self.processed_images["Zone Chiare"] = bright_image
+            
+            # Crea un'immagine combinata che mostra entrambi i tipi di difetti
+            combined_image, combined_mask, total_percent = self.combine_defects(
+                gray_image, dark_mask, bright_mask, dark_percent, bright_percent)
+            self.processed_images["Difetti Combinati"] = combined_image
             
             # Aggiungi le maschere alle visualizzazioni
             self.processed_images["Maschera Zone Scure"] = cv2.cvtColor(dark_mask, cv2.COLOR_GRAY2BGR)
-            self.processed_images["Maschera Zone Rosse"] = cv2.cvtColor(red_mask, cv2.COLOR_GRAY2BGR)
+            self.processed_images["Maschera Zone Chiare"] = cv2.cvtColor(bright_mask, cv2.COLOR_GRAY2BGR)
+            self.processed_images["Maschera Combinata"] = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
             
-            # Determina se il pezzo è difettato (basato su area scura o area rossa)
-            is_defective_dark = dark_percent > self.soglia_difetti
-            is_defective_red = red_percent > self.soglia_difetti
-            is_defective = is_defective_dark or is_defective_red
-            
+            # Determina se il pezzo è difettato (basato sull'area difettata totale)
+            is_defective = total_percent > self.soglia_difetti
             status_text = "DIFETTATO" if is_defective else "OK"
-            status_reason = ""
-            if is_defective_dark and is_defective_red:
-                status_reason = " (zone scure e rosse)"
-            elif is_defective_dark:
-                status_reason = " (zone scure)"
-            elif is_defective_red:
-                status_reason = " (zone rosse)"
             
             # Aggiorna i risultati dell'analisi
             self.dark_area_var.set(f"Area scura: {dark_percent:.2f}%")
-            self.red_area_var.set(f"Area rossa: {red_percent:.2f}%")
+            self.bright_area_var.set(f"Area chiara: {bright_percent:.2f}%")
+            self.total_area_var.set(f"Area difettata totale: {total_percent:.2f}%")
             
             # Imposta lo stato con colore
-            self.status_var.set(f"Stato: {status_text}{status_reason}")
+            self.status_var.set(f"Stato: {status_text}")
             if is_defective:
                 self.status_label.config(foreground="red")
             else:
@@ -309,16 +310,17 @@ class RiconoscitoreDifetti:
             # Aggiorna il combobox con le viste disponibili
             self.view_options["values"] = list(self.processed_images.keys())
             
-            # Passa alla vista "Zone Scure" se è la prima elaborazione
+            # Passa alla vista "Difetti Combinati" se è la prima elaborazione
             if self.current_view not in self.processed_images:
-                self.view_var.set("Colormap JET")
-                self.display_image(self.processed_images["Colormap JET"])
-                self.current_view = "Colormap JET"
+                self.view_var.set("Difetti Combinati")
+                self.display_image(self.processed_images["Difetti Combinati"])
+                self.current_view = "Difetti Combinati"
             else:
                 # Altrimenti aggiorna la vista corrente
                 self.display_image(self.processed_images[self.current_view])
             
-            self.log(f"Elaborazione completata. Area scura: {dark_percent:.2f}%, Area rossa: {red_percent:.2f}%. Stato: {status_text}{status_reason}")
+            self.log(f"Elaborazione completata. Area scura: {dark_percent:.2f}%, Area chiara: {bright_percent:.2f}%, "
+                   f"Totale: {total_percent:.2f}%. Stato: {status_text}")
             
         except Exception as e:
             self.log(f"Errore durante l'elaborazione: {str(e)}")
@@ -341,61 +343,92 @@ class RiconoscitoreDifetti:
         # Crea un'immagine a colori per evidenziare le aree scure
         contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         result_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
-        cv2.drawContours(result_image, contours, -1, (0, 0, 255), 2)
+        cv2.drawContours(result_image, contours, -1, (0, 0, 255), 2)  # Contorni rossi per zone scure
         
         # Aggiungi testo con la percentuale e parametri
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(result_image, f"Area scura: {dark_percent:.2f}%", (10, 30), 
                    font, 0.7, (0, 0, 255), 2)
-        cv2.putText(result_image, f"Stato: {'DIFETTATO' if dark_percent > self.soglia_difetti else 'OK'}", 
-                   (10, 60), font, 0.7, (0, 0, 255) if dark_percent > self.soglia_difetti else (0, 255, 0), 2)
-        cv2.putText(result_image, f"Soglia colore: {threshold}", (10, 90), 
+        cv2.putText(result_image, f"Soglia scuro: {threshold}", (10, 60), 
                    font, 0.7, (255, 255, 0), 2)
         
         return result_image, processed_mask, dark_percent
     
-    def detect_red_regions(self, colored_image, threshold=200):
-        """Rileva le regioni rosse nella colormap JET e calcola la percentuale."""
-        # Converti l'immagine in HSV
-        hsv_image = cv2.cvtColor(colored_image, cv2.COLOR_BGR2HSV)
-        
-        # Definisci il range di rosso in HSV
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([160, 100, 100])
-        upper_red2 = np.array([180, 255, 255])
-        
-        # Crea maschere per i due intervalli di rosso (HSV è ciclico)
-        mask1 = cv2.inRange(hsv_image, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv_image, lower_red2, upper_red2)
-        
-        # Unisci le maschere
-        red_mask = cv2.bitwise_or(mask1, mask2)
+    def detect_bright_regions(self, gray_image, threshold=200):
+        """Rileva le regioni chiare e calcola la percentuale."""
+        # Applica soglia per individuare le aree chiare
+        _, threshold_image = cv2.threshold(gray_image, threshold, 255, cv2.THRESH_BINARY)
         
         # Operazioni morfologiche per migliorare il rilevamento
         kernel = np.ones((5, 5), np.uint8)
-        processed_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+        processed_mask = cv2.morphologyEx(threshold_image, cv2.MORPH_OPEN, kernel)
         
-        # Calcola la percentuale di area rossa
+        # Calcola la percentuale di area chiara
         total_pixels = processed_mask.shape[0] * processed_mask.shape[1]
-        red_pixels = cv2.countNonZero(processed_mask)
-        red_percent = (red_pixels / total_pixels) * 100
+        bright_pixels = cv2.countNonZero(processed_mask)
+        bright_percent = (bright_pixels / total_pixels) * 100
         
-        # Crea un'immagine per evidenziare le aree rosse
+        # Crea un'immagine a colori per evidenziare le aree chiare
         contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        result_image = colored_image.copy()
-        cv2.drawContours(result_image, contours, -1, (0, 255, 0), 2)  # Contorni verdi
+        result_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
+        cv2.drawContours(result_image, contours, -1, (0, 255, 0), 2)  # Contorni verdi per zone chiare
         
         # Aggiungi testo con la percentuale e parametri
         font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(result_image, f"Area rossa: {red_percent:.2f}%", (10, 30), 
+        cv2.putText(result_image, f"Area chiara: {bright_percent:.2f}%", (10, 30), 
                    font, 0.7, (0, 255, 0), 2)
-        cv2.putText(result_image, f"Stato: {'DIFETTATO' if red_percent > self.soglia_difetti else 'OK'}", 
-                   (10, 60), font, 0.7, (0, 0, 255) if red_percent > self.soglia_difetti else (0, 255, 0), 2)
-        cv2.putText(result_image, f"Soglia rosso: {threshold}", (10, 90), 
+        cv2.putText(result_image, f"Soglia chiaro: {threshold}", (10, 60), 
                    font, 0.7, (255, 255, 0), 2)
         
-        return result_image, processed_mask, red_percent
+        return result_image, processed_mask, bright_percent
+    
+    def combine_defects(self, gray_image, dark_mask, bright_mask, dark_percent, bright_percent):
+        """Combina le maschere dei difetti scuri e chiari."""
+        # Combina le maschere con OR
+        combined_mask = cv2.bitwise_or(dark_mask, bright_mask)
+        
+        # Ricalcola la percentuale totale (poiché potrebbero esserci sovrapposizioni)
+        total_pixels = combined_mask.shape[0] * combined_mask.shape[1]
+        defect_pixels = cv2.countNonZero(combined_mask)
+        total_percent = (defect_pixels / total_pixels) * 100
+        
+        # Crea un'immagine a colori per evidenziare tutte le aree difettate
+        result_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
+        
+        # Disegna contorni per zone scure (rosso)
+        contours_dark, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result_image, contours_dark, -1, (0, 0, 255), 2)
+        
+        # Disegna contorni per zone chiare (verde)
+        contours_bright, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result_image, contours_bright, -1, (0, 255, 0), 2)
+        
+        # Crea un overlay colorato per visualizzare meglio le aree difettate
+        overlay = result_image.copy()
+        # Colora aree scure in blu semi-trasparente
+        overlay[dark_mask > 0] = [255, 0, 0]  # BGR: blu
+        # Colora aree chiare in verde semi-trasparente
+        overlay[bright_mask > 0] = [0, 255, 0]  # BGR: verde
+        
+        # Combina con l'immagine originale
+        alpha = 0.3  # Trasparenza dell'overlay
+        cv2.addWeighted(overlay, alpha, result_image, 1 - alpha, 0, result_image)
+        
+        # Aggiungi testo con percentuali e parametri
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(result_image, f"Area scura: {dark_percent:.2f}%", (10, 30), 
+                   font, 0.7, (0, 0, 255), 2)
+        cv2.putText(result_image, f"Area chiara: {bright_percent:.2f}%", (10, 60), 
+                   font, 0.7, (0, 255, 0), 2)
+        cv2.putText(result_image, f"Area totale difettata: {total_percent:.2f}%", (10, 90), 
+                   font, 0.7, (255, 255, 255), 2)
+        
+        status_text = "DIFETTATO" if total_percent > self.soglia_difetti else "OK"
+        status_color = (0, 0, 255) if total_percent > self.soglia_difetti else (0, 255, 0)
+        cv2.putText(result_image, f"Stato: {status_text}", (10, 120), 
+                   font, 0.7, status_color, 2)
+        
+        return result_image, combined_mask, total_percent
     
     def display_image(self, cv_image):
         """Visualizza un'immagine OpenCV nel canvas."""
