@@ -64,7 +64,7 @@ class RiconoscitoreDifetti:
         
         # Buffer per ridurre lo sfarfallio
         self.frame_buffer = []
-        self.buffer_size = 3  # Numero di frame da mediare
+        self.buffer_size = 5 # Numero di frame da mediare
         
         # Percorso dell'immagine corrente
         self.image_path = None
@@ -482,7 +482,10 @@ class RiconoscitoreDifetti:
             self.log(f"Errore nell'avvio della webcam: {str(e)}")
     
     def update_webcam_feed(self):
-        """Aggiorna il feed della webcam in modo continuo."""
+        """Aggiorna il feed della webcam in modo continuo. Versione migliorata con gestione ottimizzata."""
+        last_display_time = 0
+        display_interval = 1.0 / 30  # Limita a 30 fps per il display
+        
         while self.is_capturing:
             try:
                 # Leggi un frame dalla webcam
@@ -503,15 +506,22 @@ class RiconoscitoreDifetti:
                 while len(self.frame_buffer) > self.buffer_size:
                     self.frame_buffer.pop(0)
                 
-                # Se ci sono abbastanza frame nel buffer, calcola la media
-                if len(self.frame_buffer) >= self.buffer_size:
+                # Limita la frequenza di aggiornamento del display per evitare flickering
+                current_time = time.time()
+                enough_frames = len(self.frame_buffer) >= max(2, self.buffer_size // 2)
+                
+                if (current_time - last_display_time >= display_interval) and enough_frames:
                     # Stabilizzazione del frame (media dei frame nel buffer)
                     stabilized_frame = self.stabilize_frames(self.frame_buffer)
+                    
                     # Visualizza il frame stabilizzato
                     self.display_webcam_frame(stabilized_frame)
+                    
+                    # Aggiorna il timestamp dell'ultimo display
+                    last_display_time = current_time
+                    
                     # Se l'analisi è continua, usa questo frame per l'analisi
                     if self.is_analyzing:
-                        current_time = time.time()
                         if current_time - self.last_analysis_time > self.analysis_interval:
                             self.original_image = stabilized_frame.copy()
                             # Elabora l'immagine in un thread separato
@@ -521,13 +531,10 @@ class RiconoscitoreDifetti:
                                 self.analysis_thread.daemon = True
                                 self.analysis_thread.start()
                                 self.last_analysis_time = current_time
-                else:
-                    # Se non ci sono abbastanza frame, visualizza l'ultimo
-                    self.display_webcam_frame(frame)
                 
-                # Breve pausa per non sovraccaricare la CPU
-                time.sleep(0.01)
-                
+                # Pausa adattiva basata sul framerate target
+                time.sleep(max(0.001, display_interval - (time.time() - current_time)))
+                    
             except Exception as e:
                 self.log(f"Errore nell'aggiornamento del feed webcam: {str(e)}")
                 time.sleep(0.1)  # Pausa per evitare loop di errore rapidi
@@ -537,7 +544,8 @@ class RiconoscitoreDifetti:
             self.capture.release()
     
     def stabilize_frames(self, frames):
-        """Stabilizza una serie di frame facendone la media per ridurre lo sfarfallio."""
+        """Stabilizza una serie di frame facendone la media per ridurre lo sfarfallio.
+        Versione migliorata con pesi e controlli aggiuntivi."""
         if not frames:
             return None
         
@@ -551,18 +559,28 @@ class RiconoscitoreDifetti:
             if frame.shape[0] != height or frame.shape[1] != width:
                 # Se le dimensioni sono diverse, restituisci l'ultimo frame
                 return frames[-1]
+    
+        # Applica pesi crescenti ai frame più recenti per una transizione più fluida
+        # Questo dà più importanza ai frame più recenti riducendo il ritardo percepito
+        total_weight = 0
+        weighted_sum = np.zeros_like(frames[0], dtype=np.float32)
         
-        # Converti i frame in float32 per il calcolo della media
-        float_frames = [frame.astype(np.float32) for frame in frames]
+        for i, frame in enumerate(frames):
+            # Usa un peso esponenziale (i frame più recenti hanno peso maggiore)
+            weight = 1.5 ** i  # Il frame più recente avrà il peso maggiore
+            weighted_sum += frame.astype(np.float32) * weight
+            total_weight += weight
         
-        # Calcola la media
-        avg_frame = sum(float_frames) / len(float_frames)
+        # Normalizza per i pesi
+        avg_frame = weighted_sum / total_weight
         
-        # Converti il risultato in uint8 per la visualizzazione
+        # Applica un leggero filtro bilaterale per preservare i bordi ma ridurre il rumore
+        avg_frame = cv2.bilateralFilter(avg_frame.astype(np.uint8), 5, 35, 35)
+        
         return avg_frame.astype(np.uint8)
     
     def display_webcam_frame(self, frame):
-        """Visualizza un frame dalla webcam nel canvas."""
+        """Visualizza un frame dalla webcam nel canvas. Versione migliorata con double buffering."""
         if frame is None:
             return
         
@@ -584,8 +602,12 @@ class RiconoscitoreDifetti:
             new_width = int(width * scale)
             new_height = int(height * scale)
             
+            # Applica una leggera sfocatura gaussiana per ridurre il rumore ad alta frequenza
+            # che può causare flickering (valori bassi preservano i dettagli)
+            frame_denoised = cv2.GaussianBlur(frame, (3, 3), 0.5)
+            
             # Ridimensiona il frame
-            resized = cv2.resize(frame, (new_width, new_height))
+            resized = cv2.resize(frame_denoised, (new_width, new_height), interpolation=cv2.INTER_AREA)
             
             # Converti da BGR a RGB per PIL
             display_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
