@@ -1,4 +1,4 @@
- import numpy as np
+import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+import cv2  # Import cv2 globally so it's available for all methods
 
 def main():
     # Verifica le dipendenze richieste
@@ -174,7 +175,7 @@ class RiconoscitoreDifetti:
             self.camera_var.set(camera_names[0])
         
         self.camera_combo = ttk.Combobox(camera_frame, textvariable=self.camera_var, 
-                                          values=camera_names, state="readonly")
+                                        values=camera_names, state="readonly")
         self.camera_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
         self.start_button = ttk.Button(webcam_frame, text="Avvia Webcam", command=self.start_webcam)
@@ -201,8 +202,8 @@ class RiconoscitoreDifetti:
         
         self.analysis_interval_var = tk.DoubleVar(value=self.analysis_interval)
         freq_spinbox = ttk.Spinbox(freq_frame, from_=0.1, to=5.0, increment=0.1, 
-                                   textvariable=self.analysis_interval_var, width=5,
-                                   command=self.update_analysis_interval)
+                                 textvariable=self.analysis_interval_var, width=5,
+                                 command=self.update_analysis_interval)
         freq_spinbox.pack(side=tk.LEFT, padx=5)
         
         # Frame per le impostazioni di buffering
@@ -213,8 +214,8 @@ class RiconoscitoreDifetti:
         
         self.buffer_size_var = tk.IntVar(value=self.buffer_size)
         buffer_spinbox = ttk.Spinbox(buffer_frame, from_=1, to=10, increment=1, 
-                                    textvariable=self.buffer_size_var, width=5,
-                                    command=self.update_buffer_size)
+                                   textvariable=self.buffer_size_var, width=5,
+                                   command=self.update_buffer_size)
         buffer_spinbox.pack(side=tk.LEFT, padx=5)
         
         # Controlli per parametri di segmentazione
@@ -224,8 +225,8 @@ class RiconoscitoreDifetti:
         ttk.Label(segment_frame, text="Dimensione base (%): ").pack(anchor=tk.W, padx=10, pady=5)
         self.base_roi_var = tk.IntVar(value=self.base_roi_percent)
         base_scale = ttk.Scale(segment_frame, from_=10, to=70, 
-                              variable=self.base_roi_var, 
-                              command=self.update_base_roi)
+                             variable=self.base_roi_var, 
+                             command=self.update_base_roi)
         base_scale.pack(fill=tk.X, padx=10, pady=5)
         
         # Soglia per la sensibilità colore SCURO
@@ -234,8 +235,8 @@ class RiconoscitoreDifetti:
         
         self.dark_var = tk.IntVar(value=self.soglia_colore_scuro)
         dark_scale = ttk.Scale(dark_frame, from_=0, to=255, 
-                              variable=self.dark_var, 
-                              command=self.update_dark_threshold)
+                             variable=self.dark_var, 
+                             command=self.update_dark_threshold)
         dark_scale.pack(fill=tk.X, padx=5, pady=5)
         
         self.dark_label = ttk.Label(dark_frame, text=f"Soglia zone scure: {self.soglia_colore_scuro}")
@@ -247,8 +248,8 @@ class RiconoscitoreDifetti:
         
         self.bright_var = tk.IntVar(value=self.soglia_colore_chiaro)
         bright_scale = ttk.Scale(bright_frame, from_=100, to=255, 
-                                variable=self.bright_var, 
-                                command=self.update_bright_threshold)
+                               variable=self.bright_var, 
+                               command=self.update_bright_threshold)
         bright_scale.pack(fill=tk.X, padx=5, pady=5)
         
         self.bright_label = ttk.Label(bright_frame, text=f"Soglia zone chiare: {self.soglia_colore_chiaro}")
@@ -261,15 +262,15 @@ class RiconoscitoreDifetti:
         ttk.Label(edge_frame, text="Soglia Minima:").pack(anchor=tk.W, padx=10, pady=2)
         self.canny_min_var = tk.IntVar(value=self.soglia_canny_min)
         canny_min_scale = ttk.Scale(edge_frame, from_=0, to=255, 
-                                   variable=self.canny_min_var, 
-                                   command=self.update_canny_min)
+                                  variable=self.canny_min_var, 
+                                  command=self.update_canny_min)
         canny_min_scale.pack(fill=tk.X, padx=10, pady=5)
         
         ttk.Label(edge_frame, text="Soglia Massima:").pack(anchor=tk.W, padx=10, pady=2)
         self.canny_max_var = tk.IntVar(value=self.soglia_canny_max)
         canny_max_scale = ttk.Scale(edge_frame, from_=0, to=255, 
-                                   variable=self.canny_max_var, 
-                                   command=self.update_canny_max)
+                                  variable=self.canny_max_var, 
+                                  command=self.update_canny_max)
         canny_max_scale.pack(fill=tk.X, padx=10, pady=5)
         
         # Soglia per il rilevamento dei difetti complessivi
@@ -278,8 +279,8 @@ class RiconoscitoreDifetti:
         
         self.threshold_var = tk.DoubleVar(value=self.soglia_difetti)
         threshold_scale = ttk.Scale(threshold_frame, from_=0.1, to=30.0, 
-                                   variable=self.threshold_var, 
-                                   command=self.update_threshold)
+                                  variable=self.threshold_var, 
+                                  command=self.update_threshold)
         threshold_scale.pack(fill=tk.X, padx=5, pady=5)
         
         self.threshold_label = ttk.Label(threshold_frame, text=f"Soglia: {self.soglia_difetti:.1f}%")
@@ -964,10 +965,187 @@ class RiconoscitoreDifetti:
             
             # Aggiungi informazioni
             cv2.putText(region_result, f"{region_name.replace('_', ' ').title()}", (10, 20), 
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             cv2.putText(region_result, f"Difetti: {defect_percentage:.2f}%", (10, 40), 
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255) if not is_ok else (0, 255, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255) if not is_ok else (0, 255, 0), 2)
         
         # Salva l'immagine elaborata nelle viste disponibili
         if region_result is not None:
             self.processed_images[f"Analisi {region_name.replace('_', ' ').title()}"] = region_result
+    
+    def detect_dark_features(self, gray_img):
+        """Rileva caratteristiche scure come buchi, nodi, ecc."""
+        # Applica soglia per individuare le aree scure
+        _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_scuro, 255, cv2.THRESH_BINARY_INV)
+        
+        # Operazioni morfologiche per migliorare il rilevamento
+        kernel = np.ones((3, 3), np.uint8)
+        processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
+        
+        # Filtra aree troppo piccole (rumore)
+        contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        min_area = 10  # Area minima in pixel
+        filtered_mask = np.zeros_like(processed_mask)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area >= min_area:
+                cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+        
+        return filtered_mask
+    
+    def detect_bright_features(self, gray_img):
+        """Rileva caratteristiche chiare/rosse come graffi, danni, ecc."""
+        # Applica soglia per individuare le aree chiare
+        _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_chiaro, 255, cv2.THRESH_BINARY)
+        
+        # Operazioni morfologiche per migliorare il rilevamento
+        kernel = np.ones((3, 3), np.uint8)
+        processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
+        
+        # Filtra aree troppo piccole (rumore)
+        contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        min_area = 10  # Area minima in pixel
+        filtered_mask = np.zeros_like(processed_mask)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area >= min_area:
+                cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+        
+        return filtered_mask
+    
+    def detect_bright_features(self, gray_img):
+            """Rileva caratteristiche chiare/rosse come graffi, danni, ecc."""
+            # Applica soglia per individuare le aree chiare
+            _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_chiaro, 255, cv2.THRESH_BINARY)
+            
+            # Operazioni morfologiche per migliorare il rilevamento
+            kernel = np.ones((3, 3), np.uint8)
+            processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
+            
+            # Filtra aree troppo piccole (rumore)
+            contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_area = 10  # Area minima in pixel
+            filtered_mask = np.zeros_like(processed_mask)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area >= min_area:
+                    cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+            
+            return filtered_mask
+    
+    def detect_edge_issues(self, gray_img):
+        """Rileva problemi nei bordi come lati storti o danneggiati."""
+        # Applica Canny per rilevare i bordi
+        edges = cv2.Canny(gray_img, self.soglia_canny_min, self.soglia_canny_max)
+        
+        # Dilata i bordi per una migliore visualizzazione
+        kernel = np.ones((3, 3), np.uint8)
+        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+        
+        # Trova linee con Hough Transform
+        lines = cv2.HoughLinesP(dilated_edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
+        
+        # Crea una maschera per memorizzare le aree problematiche
+        edge_mask = np.zeros_like(gray_img)
+        
+        # Se ci sono linee, analizzale
+        if lines is not None:
+            # Calcola l'orientamento principale delle linee
+            angles = []
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                if x2 - x1 == 0:  # Evita divisione per zero
+                    angle = 90
+                else:
+                    angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
+                angles.append(angle)
+            
+            # Trova l'angolo mediano (orientamento principale)
+            median_angle = np.median(angles) if angles else 0
+            
+            # Identifica linee che deviano significativamente dall'orientamento principale
+            threshold_angle = 15  # Soglia di deviazione in gradi
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                if x2 - x1 == 0:
+                    angle = 90
+                else:
+                    angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
+                
+                # Se la linea devia dall'orientamento principale, marcala come problematica
+                if np.abs(angle - median_angle) > threshold_angle:
+                    cv2.line(edge_mask, (x1, y1), (x2, y2), 255, 2)
+        
+        return edge_mask
+    
+    def display_image(self, image):
+            """Visualizza un'immagine nel canvas."""
+            if image is None:
+                return
+            
+            try:
+                # Ottieni le dimensioni del canvas
+                canvas_width = self.canvas.winfo_width()
+                canvas_height = self.canvas.winfo_height()
+                
+                # Se il canvas non è ancora stato renderizzato, usa dimensioni di backup
+                if canvas_width < 50 or canvas_height < 50:
+                    canvas_width = 700
+                    canvas_height = 600
+                
+                # Dimensioni originali dell'immagine
+                height, width = image.shape[:2]
+                
+                # Calcola il fattore di scala per adattare l'immagine al canvas
+                scale = min(canvas_width/width, canvas_height/height)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                
+                # Ridimensiona l'immagine
+                resized = cv2.resize(image, (new_width, new_height))
+                
+                # Converti da BGR a RGB per PIL
+                display_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                
+                # Converti in formato PIL
+                pil_image = Image.fromarray(display_image)
+                
+                # Converti in formato Tkinter
+                tk_image = ImageTk.PhotoImage(image=pil_image)
+                
+                # Salva un riferimento all'immagine (per evitare il garbage collection)
+                self.tk_image = tk_image
+                
+                # Mostra l'immagine nel canvas
+                self.canvas.delete("all")
+                self.canvas.create_image(canvas_width//2, canvas_height//2, image=tk_image)
+                
+            except Exception as e:
+                self.log(f"Errore nella visualizzazione dell'immagine: {str(e)}")
+        
+    def change_view(self, event=None):
+            """Cambia la visualizzazione corrente."""
+            view_name = self.view_var.get()
+            if view_name in self.processed_images:
+                self.display_image(self.processed_images[view_name])
+                self.current_view = view_name
+        
+    def log(self, message):
+            """Aggiunge un messaggio al log."""
+            timestamp = time.strftime("%H:%M:%S", time.localtime())
+            log_message = f"[{timestamp}] {message}\n"
+            self.log_text.insert(tk.END, log_message)
+            self.log_text.see(tk.END)  # Scorre alla fine
+        
+    def on_close(self):
+            """Funzione chiamata quando si chiude l'applicazione."""
+            self.stop_webcam()
+            self.root.destroy()
+
+
+# Esegue il programma principale se lo script viene eseguito direttamente
+if __name__ == "__main__":
+    main()
