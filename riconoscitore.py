@@ -1,5 +1,4 @@
-import cv2
-import numpy as np
+ import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
@@ -52,8 +51,19 @@ class RiconoscitoreDifetti:
         # Variabili per la webcam
         self.capture = None
         self.is_capturing = False
+        self.is_analyzing = False  # Flag per analisi continua
         self.capture_thread = None
+        self.analysis_thread = None
         self.camera_index = 0  # Indice della webcam (0 = predefinita)
+        self.available_cameras = []  # Lista delle webcam disponibili
+        
+        # Variabile per controllare la frequenza di aggiornamento dell'analisi
+        self.last_analysis_time = 0
+        self.analysis_interval = 0.5  # Secondi tra le analisi (default: 0.5s)
+        
+        # Buffer per ridurre lo sfarfallio
+        self.frame_buffer = []
+        self.buffer_size = 3  # Numero di frame da mediare
         
         # Percorso dell'immagine corrente
         self.image_path = None
@@ -70,14 +80,44 @@ class RiconoscitoreDifetti:
             "lato_sinistro": {"ok": True, "difetti": [], "percentuale": 0.0}
         }
         
+        # Rileva le webcam disponibili
+        self.detect_cameras()
+        
         # Crea l'interfaccia utente
         self.create_widgets()
         
         # Testo iniziale per l'applicazione
-        self.log("Applicazione avviata. Premi 'Avvia webcam' per iniziare.")
+        self.log("Applicazione avviata. Seleziona una webcam e premi 'Avvia webcam' per iniziare.")
         
         # Imposta la routine di chiusura
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+    
+    def detect_cameras(self):
+        """Rileva le webcam disponibili nel sistema."""
+        self.available_cameras = []
+        
+        # Prova diversi indici di camera fino a quando non fallisce l'apertura
+        max_cameras = 10  # Limite massimo di tentativi
+        
+        for i in range(max_cameras):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                # Ottieni il nome della webcam se possibile
+                ret, frame = cap.read()
+                if ret:
+                    name = f"Webcam {i}"
+                    # In alcuni sistemi, è possibile ottenere il nome della webcam
+                    try:
+                        name = cap.getBackendName() + f" ({i})"
+                    except:
+                        pass
+                    self.available_cameras.append((i, name))
+                cap.release()
+            else:
+                break
+        
+        if not self.available_cameras:
+            self.available_cameras.append((0, "Webcam predefinita"))
     
     def create_widgets(self):
         # Crea un menu in alto
@@ -122,24 +162,36 @@ class RiconoscitoreDifetti:
         webcam_frame = ttk.LabelFrame(control_frame, text="Controlli Webcam")
         webcam_frame.pack(fill=tk.X, padx=10, pady=10)
         
+        # Selettore webcam
+        camera_frame = ttk.Frame(webcam_frame)
+        camera_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(camera_frame, text="Seleziona webcam: ").pack(side=tk.LEFT)
+        
+        self.camera_var = tk.StringVar()
+        camera_names = [name for idx, name in self.available_cameras]
+        if camera_names:
+            self.camera_var.set(camera_names[0])
+        
+        self.camera_combo = ttk.Combobox(camera_frame, textvariable=self.camera_var, 
+                                          values=camera_names, state="readonly")
+        self.camera_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
         self.start_button = ttk.Button(webcam_frame, text="Avvia Webcam", command=self.start_webcam)
         self.start_button.pack(fill=tk.X, padx=10, pady=5)
         
         self.stop_button = ttk.Button(webcam_frame, text="Ferma Webcam", command=self.stop_webcam, state=tk.DISABLED)
         self.stop_button.pack(fill=tk.X, padx=10, pady=5)
         
-        self.capture_button = ttk.Button(webcam_frame, text="Scatta e Analizza", command=self.capture_and_analyze, state=tk.DISABLED)
-        self.capture_button.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Checkbox per analisi automatica
-        self.auto_analyze_var = tk.BooleanVar(value=False)
-        self.auto_analyze_check = ttk.Checkbutton(
+        # Checkbox per analisi continua
+        self.continuous_analyze_var = tk.BooleanVar(value=False)
+        self.continuous_analyze_check = ttk.Checkbutton(
             webcam_frame, 
-            text="Analisi automatica continua", 
-            variable=self.auto_analyze_var,
-            command=self.toggle_auto_analyze
+            text="Analisi continua (LIVE)", 
+            variable=self.continuous_analyze_var,
+            command=self.toggle_continuous_analyze
         )
-        self.auto_analyze_check.pack(fill=tk.X, padx=10, pady=5)
+        self.continuous_analyze_check.pack(fill=tk.X, padx=10, pady=5)
         
         # Frame per la frequenza di analisi
         freq_frame = ttk.Frame(webcam_frame)
@@ -147,10 +199,23 @@ class RiconoscitoreDifetti:
         
         ttk.Label(freq_frame, text="Intervallo analisi (sec): ").pack(side=tk.LEFT)
         
-        self.analysis_freq_var = tk.DoubleVar(value=1.0)
-        freq_spinbox = ttk.Spinbox(freq_frame, from_=0.1, to=10.0, increment=0.1, 
-                                   textvariable=self.analysis_freq_var, width=5)
+        self.analysis_interval_var = tk.DoubleVar(value=self.analysis_interval)
+        freq_spinbox = ttk.Spinbox(freq_frame, from_=0.1, to=5.0, increment=0.1, 
+                                   textvariable=self.analysis_interval_var, width=5,
+                                   command=self.update_analysis_interval)
         freq_spinbox.pack(side=tk.LEFT, padx=5)
+        
+        # Frame per le impostazioni di buffering
+        buffer_frame = ttk.Frame(webcam_frame)
+        buffer_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(buffer_frame, text="Buffer anti-flickering: ").pack(side=tk.LEFT)
+        
+        self.buffer_size_var = tk.IntVar(value=self.buffer_size)
+        buffer_spinbox = ttk.Spinbox(buffer_frame, from_=1, to=10, increment=1, 
+                                    textvariable=self.buffer_size_var, width=5,
+                                    command=self.update_buffer_size)
+        buffer_spinbox.pack(side=tk.LEFT, padx=5)
         
         # Controlli per parametri di segmentazione
         segment_frame = ttk.LabelFrame(control_frame, text="Parametri Segmentazione")
@@ -267,6 +332,24 @@ class RiconoscitoreDifetti:
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=log_scrollbar.set)
     
+    def update_buffer_size(self, event=None):
+        """Aggiorna la dimensione del buffer anti-flickering."""
+        new_size = self.buffer_size_var.get()
+        if new_size < 1:
+            new_size = 1
+        elif new_size > 10:
+            new_size = 10
+        
+        self.buffer_size = new_size
+        self.buffer_size_var.set(new_size)
+        
+        # Svuota il buffer esistente
+        self.frame_buffer = []
+    
+    def update_analysis_interval(self, event=None):
+        """Aggiorna l'intervallo di tempo tra le analisi continue."""
+        self.analysis_interval = self.analysis_interval_var.get()
+    
     def load_image(self):
         """Carica un'immagine da file."""
         file_path = filedialog.askopenfilename(
@@ -350,28 +433,48 @@ class RiconoscitoreDifetti:
     def start_webcam(self):
         """Avvia la cattura dalla webcam."""
         try:
+            # Ottieni l'indice della webcam selezionata
+            selected_camera = self.camera_var.get()
+            camera_index = 0  # Default
+            
+            for idx, name in self.available_cameras:
+                if name == selected_camera:
+                    camera_index = idx
+                    break
+            
             # Inizializza la webcam
-            self.capture = cv2.VideoCapture(self.camera_index)
+            self.capture = cv2.VideoCapture(camera_index)
+            
+            # Imposta risoluzione più alta se possibile
+            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             
             if not self.capture.isOpened():
-                messagebox.showerror("Errore", "Impossibile accedere alla webcam.")
-                self.log("Errore: Impossibile accedere alla webcam.")
+                messagebox.showerror("Errore", f"Impossibile accedere alla webcam {selected_camera}.")
+                self.log(f"Errore: Impossibile accedere alla webcam {selected_camera}.")
                 return
             
             # Imposta flag di cattura
             self.is_capturing = True
             
+            # Svuota il buffer dei frame
+            self.frame_buffer = []
+            
             # Attiva/disattiva i pulsanti
             self.start_button.config(state=tk.DISABLED)
             self.stop_button.config(state=tk.NORMAL)
-            self.capture_button.config(state=tk.NORMAL)
+            self.camera_combo.config(state=tk.DISABLED)
             
             # Avvia il thread di cattura
             self.capture_thread = threading.Thread(target=self.update_webcam_feed)
             self.capture_thread.daemon = True
             self.capture_thread.start()
             
-            self.log("Webcam avviata.")
+            # Se l'analisi continua è attivata, avviala subito
+            if self.continuous_analyze_var.get():
+                self.toggle_continuous_analyze()
+            
+            self.log(f"Webcam {selected_camera} avviata.")
             
         except Exception as e:
             messagebox.showerror("Errore", f"Errore nell'avvio della webcam: {str(e)}")
@@ -379,8 +482,6 @@ class RiconoscitoreDifetti:
     
     def update_webcam_feed(self):
         """Aggiorna il feed della webcam in modo continuo."""
-        last_analysis_time = 0
-        
         while self.is_capturing:
             try:
                 # Leggi un frame dalla webcam
@@ -388,36 +489,76 @@ class RiconoscitoreDifetti:
                 
                 if not ret:
                     self.log("Errore nella lettura del frame dalla webcam.")
-                    break
+                    time.sleep(0.1)  # Piccola pausa prima di riprovare
+                    continue
                 
                 # Specchia orizzontalmente il frame (più naturale per l'utente)
                 frame = cv2.flip(frame, 1)
                 
-                # Visualizza il frame live
-                self.display_webcam_frame(frame)
+                # Aggiungi il frame al buffer
+                self.frame_buffer.append(frame)
                 
-                # Analisi automatica se abilitata
-                current_time = time.time()
-                if (self.auto_analyze_var.get() and 
-                    current_time - last_analysis_time > self.analysis_freq_var.get()):
-                    # Salva l'ultimo frame per elaborarlo
-                    self.original_image = frame.copy()
-                    # Elabora l'immagine in un thread separato per non bloccare l'UI
-                    analysis_thread = threading.Thread(target=self.process_image)
-                    analysis_thread.daemon = True
-                    analysis_thread.start()
-                    last_analysis_time = current_time
+                # Mantieni il buffer alla giusta dimensione
+                while len(self.frame_buffer) > self.buffer_size:
+                    self.frame_buffer.pop(0)
+                
+                # Se ci sono abbastanza frame nel buffer, calcola la media
+                if len(self.frame_buffer) >= self.buffer_size:
+                    # Stabilizzazione del frame (media dei frame nel buffer)
+                    stabilized_frame = self.stabilize_frames(self.frame_buffer)
+                    # Visualizza il frame stabilizzato
+                    self.display_webcam_frame(stabilized_frame)
+                    # Se l'analisi è continua, usa questo frame per l'analisi
+                    if self.is_analyzing:
+                        current_time = time.time()
+                        if current_time - self.last_analysis_time > self.analysis_interval:
+                            self.original_image = stabilized_frame.copy()
+                            # Elabora l'immagine in un thread separato
+                            if (self.analysis_thread is None or 
+                                not self.analysis_thread.is_alive()):
+                                self.analysis_thread = threading.Thread(target=self.process_image)
+                                self.analysis_thread.daemon = True
+                                self.analysis_thread.start()
+                                self.last_analysis_time = current_time
+                else:
+                    # Se non ci sono abbastanza frame, visualizza l'ultimo
+                    self.display_webcam_frame(frame)
                 
                 # Breve pausa per non sovraccaricare la CPU
-                time.sleep(0.03)
+                time.sleep(0.01)
                 
             except Exception as e:
                 self.log(f"Errore nell'aggiornamento del feed webcam: {str(e)}")
-                break
+                time.sleep(0.1)  # Pausa per evitare loop di errore rapidi
         
         # Rilascia la webcam quando esco dal ciclo
         if self.capture is not None and self.is_capturing == False:
             self.capture.release()
+    
+    def stabilize_frames(self, frames):
+        """Stabilizza una serie di frame facendone la media per ridurre lo sfarfallio."""
+        if not frames:
+            return None
+        
+        # Se c'è solo un frame, restituiscilo direttamente
+        if len(frames) == 1:
+            return frames[0]
+        
+        # Verifica che tutti i frame abbiano la stessa dimensione
+        height, width = frames[0].shape[:2]
+        for frame in frames[1:]:
+            if frame.shape[0] != height or frame.shape[1] != width:
+                # Se le dimensioni sono diverse, restituisci l'ultimo frame
+                return frames[-1]
+        
+        # Converti i frame in float32 per il calcolo della media
+        float_frames = [frame.astype(np.float32) for frame in frames]
+        
+        # Calcola la media
+        avg_frame = sum(float_frames) / len(float_frames)
+        
+        # Converti il risultato in uint8 per la visualizzazione
+        return avg_frame.astype(np.uint8)
     
     def display_webcam_frame(self, frame):
         """Visualizza un frame dalla webcam nel canvas."""
@@ -466,6 +607,11 @@ class RiconoscitoreDifetti:
     
     def stop_webcam(self):
         """Ferma la cattura dalla webcam."""
+        # Disattiva l'analisi continua se attiva
+        if self.is_analyzing:
+            self.is_analyzing = False
+            self.continuous_analyze_var.set(False)
+        
         self.is_capturing = False
         
         # Attendi che il thread di cattura termini
@@ -477,10 +623,13 @@ class RiconoscitoreDifetti:
             self.capture.release()
             self.capture = None
         
+        # Svuota il buffer dei frame
+        self.frame_buffer = []
+        
         # Ripristina l'interfaccia
         self.start_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
-        self.capture_button.config(state=tk.DISABLED)
+        self.camera_combo.config(state="readonly")
         
         # Cancella il canvas
         self.canvas.delete("all")
@@ -488,25 +637,44 @@ class RiconoscitoreDifetti:
         
         self.log("Webcam fermata.")
     
+    def toggle_continuous_analyze(self):
+        """Attiva/disattiva l'analisi continua."""
+        is_active = self.continuous_analyze_var.get()
+        
+        if is_active and self.is_capturing:
+            self.is_analyzing = True
+            self.last_analysis_time = 0  # Forza l'analisi immediata
+            self.log(f"Analisi continua LIVE attivata con intervallo di {self.analysis_interval:.1f} secondi.")
+        else:
+            self.is_analyzing = False
+            if is_active and not self.is_capturing:
+                self.log("La webcam deve essere avviata per l'analisi continua.")
+                self.continuous_analyze_var.set(False)
+            else:
+                self.log("Analisi continua LIVE disattivata.")
+    
     def capture_and_analyze(self):
-        """Cattura un frame dalla webcam e lo analizza."""
+        """Cattura un frame dalla webcam e lo analizza manualmente."""
         if not self.is_capturing or self.capture is None:
             messagebox.showwarning("Attenzione", "La webcam non è attiva.")
             return
         
         try:
-            # Leggi un frame dalla webcam
-            ret, frame = self.capture.read()
-            
-            if not ret:
-                messagebox.showerror("Errore", "Impossibile catturare il frame dalla webcam.")
-                return
-                
-            # Specchia orizzontalmente il frame
-            frame = cv2.flip(frame, 1)
-            
-            # Salva il frame come immagine originale
-            self.original_image = frame.copy()
+            # Se ci sono abbastanza frame nel buffer, usa la versione stabilizzata
+            if len(self.frame_buffer) >= self.buffer_size:
+                # Stabilizzazione del frame (media dei frame nel buffer)
+                stabilized_frame = self.stabilize_frames(self.frame_buffer)
+                self.original_image = stabilized_frame.copy()
+            else:
+                # Altrimenti, leggi un nuovo frame
+                ret, frame = self.capture.read()
+                if not ret:
+                    messagebox.showerror("Errore", "Impossibile catturare il frame dalla webcam.")
+                    return
+                    
+                # Specchia orizzontalmente il frame
+                frame = cv2.flip(frame, 1)
+                self.original_image = frame.copy()
             
             # Processa l'immagine
             self.process_image()
@@ -516,14 +684,6 @@ class RiconoscitoreDifetti:
         except Exception as e:
             self.log(f"Errore durante la cattura: {str(e)}")
             messagebox.showerror("Errore", f"Si è verificato un errore: {str(e)}")
-    
-    def toggle_auto_analyze(self):
-        """Attiva/disattiva l'analisi automatica."""
-        auto_analyze = self.auto_analyze_var.get()
-        if auto_analyze:
-            self.log(f"Analisi automatica attivata con intervallo di {self.analysis_freq_var.get():.1f} secondi.")
-        else:
-            self.log("Analisi automatica disattivata.")
     
     def segment_image(self, image):
         """Segmenta l'immagine in base (centro) e 4 lati (superiore, inferiore, sinistro, destro)."""
@@ -613,11 +773,12 @@ class RiconoscitoreDifetti:
         }
         
         return segmented_img, regions
-    
+        
     def process_image(self):
         """Elabora l'immagine corrente con segmentazione avanzata."""
         if self.original_image is None:
-            messagebox.showwarning("Attenzione", "Nessuna immagine disponibile per l'analisi.")
+            # Nessun messagebox in modalità thread
+            self.log("Attenzione: Nessuna immagine disponibile per l'analisi.")
             return
         
         try:
@@ -705,18 +866,22 @@ class RiconoscitoreDifetti:
             # Aggiorna il combobox con le viste disponibili
             self.root.after(0, lambda: self.view_options.config(values=list(self.processed_images.keys())))
             
-            # Passa alla vista "Risultato Analisi"
-            self.root.after(0, lambda: self.view_var.set("Risultato Analisi"))
-            self.root.after(0, lambda: self.display_image(self.processed_images["Risultato Analisi"]))
-            self.current_view = "Risultato Analisi"
+            # Passa alla vista "Risultato Analisi" se non è già in modalità continua
+            if not self.is_analyzing or not self.current_view:
+                self.root.after(0, lambda: self.view_var.set("Risultato Analisi"))
+                self.root.after(0, lambda: self.display_image(self.processed_images["Risultato Analisi"]))
+                self.current_view = "Risultato Analisi"
+            elif self.current_view in self.processed_images:
+                # Aggiorna la vista corrente
+                self.root.after(0, lambda: self.display_image(self.processed_images[self.current_view]))
             
-            # Log dei risultati
-            self.root.after(0, lambda: self.log(
-                f"Analisi completata. Stato complessivo: {status_text}. {total_defect_percent:.2f}% area totale difettata."))
+            # Log dei risultati (solo se non in analisi continua o ogni 5 secondi in analisi continua)
+            if not self.is_analyzing or (time.time() % 5) < 1:
+                self.root.after(0, lambda: self.log(
+                    f"Analisi completata. Stato complessivo: {status_text}. {total_defect_percent:.2f}% area totale difettata."))
             
         except Exception as e:
             self.log(f"Errore durante l'elaborazione: {str(e)}")
-            messagebox.showerror("Errore", f"Si è verificato un errore: {str(e)}")
     
     def analyze_region(self, region_name, region_data, region_type):
         """Analizza una regione specifica dell'immagine e identifica i difetti."""
@@ -806,159 +971,3 @@ class RiconoscitoreDifetti:
         # Salva l'immagine elaborata nelle viste disponibili
         if region_result is not None:
             self.processed_images[f"Analisi {region_name.replace('_', ' ').title()}"] = region_result
-    
-    def detect_dark_features(self, gray_img):
-        """Rileva caratteristiche scure come buchi, nodi, ecc."""
-        # Applica soglia per individuare le aree scure
-        _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_scuro, 255, cv2.THRESH_BINARY_INV)
-        
-        # Operazioni morfologiche per migliorare il rilevamento
-        kernel = np.ones((3, 3), np.uint8)
-        processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
-        
-        # Filtra aree troppo piccole (rumore)
-        contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = 10  # Area minima in pixel
-        filtered_mask = np.zeros_like(processed_mask)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area >= min_area:
-                cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
-        
-        return filtered_mask
-    
-    def detect_bright_features(self, gray_img):
-        """Rileva caratteristiche chiare/rosse come graffi, danni, ecc."""
-        # Applica soglia per individuare le aree chiare
-        _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_chiaro, 255, cv2.THRESH_BINARY)
-        
-        # Operazioni morfologiche per migliorare il rilevamento
-        kernel = np.ones((3, 3), np.uint8)
-        processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
-        
-        # Filtra aree troppo piccole (rumore)
-        contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = 10  # Area minima in pixel
-        filtered_mask = np.zeros_like(processed_mask)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area >= min_area:
-                cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
-        
-        return filtered_mask
-    
-    def detect_edge_issues(self, gray_img):
-        """Rileva problemi nei bordi come lati storti o danneggiati."""
-        # Applica Canny per rilevare i bordi
-        edges = cv2.Canny(gray_img, self.soglia_canny_min, self.soglia_canny_max)
-        
-        # Dilata i bordi per una migliore visualizzazione
-        kernel = np.ones((3, 3), np.uint8)
-        dilated_edges = cv2.dilate(edges, kernel, iterations=1)
-        
-        # Trova linee con Hough Transform
-        lines = cv2.HoughLinesP(dilated_edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
-        
-        # Crea una maschera per memorizzare le aree problematiche
-        edge_mask = np.zeros_like(gray_img)
-        
-        # Se ci sono linee, analizzale
-        if lines is not None:
-            # Calcola l'orientamento principale delle linee
-            angles = []
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                if x2 - x1 == 0:  # Evita divisione per zero
-                    angle = 90
-                else:
-                    angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
-                angles.append(angle)
-            
-            # Trova l'angolo mediano (orientamento principale)
-            median_angle = np.median(angles) if angles else 0
-            
-            # Identifica linee che deviano significativamente dall'orientamento principale
-            threshold_angle = 15  # Soglia di deviazione in gradi
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                if x2 - x1 == 0:
-                    angle = 90
-                else:
-                    angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
-                
-                # Se la linea devia dall'orientamento principale, marcala come problematica
-                if np.abs(angle - median_angle) > threshold_angle:
-                    cv2.line(edge_mask, (x1, y1), (x2, y2), 255, 2)
-        
-        return edge_mask
-    
-    def display_image(self, image):
-        """Visualizza un'immagine nel canvas."""
-        if image is None:
-            return
-        
-        try:
-            # Ottieni le dimensioni del canvas
-            canvas_width = self.canvas.winfo_width()
-            canvas_height = self.canvas.winfo_height()
-            
-            # Se il canvas non è ancora stato renderizzato, usa dimensioni di backup
-            if canvas_width < 50 or canvas_height < 50:
-                canvas_width = 700
-                canvas_height = 600
-            
-            # Dimensioni originali dell'immagine
-            height, width = image.shape[:2]
-            
-            # Calcola il fattore di scala per adattare l'immagine al canvas
-            scale = min(canvas_width/width, canvas_height/height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            
-            # Ridimensiona l'immagine
-            resized = cv2.resize(image, (new_width, new_height))
-            
-            # Converti da BGR a RGB per PIL
-            display_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            
-            # Converti in formato PIL
-            pil_image = Image.fromarray(display_image)
-            
-            # Converti in formato Tkinter
-            tk_image = ImageTk.PhotoImage(image=pil_image)
-            
-            # Salva un riferimento all'immagine (per evitare il garbage collection)
-            self.tk_image = tk_image
-            
-            # Mostra l'immagine nel canvas
-            self.canvas.delete("all")
-            self.canvas.create_image(canvas_width//2, canvas_height//2, image=tk_image)
-            
-        except Exception as e:
-            self.log(f"Errore nella visualizzazione dell'immagine: {str(e)}")
-    
-    def change_view(self, event=None):
-        """Cambia la visualizzazione corrente."""
-        view_name = self.view_var.get()
-        if view_name in self.processed_images:
-            self.display_image(self.processed_images[view_name])
-            self.current_view = view_name
-    
-    def log(self, message):
-        """Aggiunge un messaggio al log."""
-        timestamp = time.strftime("%H:%M:%S", time.localtime())
-        log_message = f"[{timestamp}] {message}\n"
-        self.log_text.insert(tk.END, log_message)
-        self.log_text.see(tk.END)  # Scorre alla fine
-    
-    def on_close(self):
-        """Funzione chiamata quando si chiude l'applicazione."""
-        self.stop_webcam()
-        self.root.destroy()
-
-
-# Esegue il programma principale se lo script viene eseguito direttamente
-if __name__ == "__main__":
-    main()
