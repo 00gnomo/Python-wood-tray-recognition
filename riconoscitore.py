@@ -117,7 +117,7 @@ class RiconoscitoreDifetti:
         self.create_widgets()
         
         # Testo iniziale per l'applicazione
-        self.log("Applicazione avviata. Premi 'Prossima Immagine' per analizzare le immagini nella cartella.")
+        print("Applicazione avviata. Premi 'Prossima Immagine' per analizzare le immagini nella cartella.")
         
         # Avvia il thread di monitoraggio del pulsante
         self.start_button_monitoring()
@@ -133,7 +133,7 @@ class RiconoscitoreDifetti:
         sound_folder = "sounds"
         if not os.path.exists(sound_folder):
             os.makedirs(sound_folder)
-            self.log(f"Cartella {sound_folder} creata.")
+            print(f"Cartella {sound_folder} creata.")
         
         # Percorsi dei file audio
         self.sound_files = {
@@ -150,11 +150,11 @@ class RiconoscitoreDifetti:
             for name, path in self.sound_files.items():
                 if os.path.exists(path):
                     self.sounds[name] = pygame.mixer.Sound(path)
-                    self.log(f"Suono '{name}' caricato.")
+                    print(f"Suono '{name}' caricato.")
                 else:
-                    self.log(f"File suono '{path}' non trovato.")
+                    print(f"File suono '{path}' non trovato.")
         except Exception as e:
-            self.log(f"Errore nel caricamento dei suoni: {str(e)}")
+            print(f"Errore nel caricamento dei suoni: {str(e)}")
     
     def check_default_sounds(self):
         """Verifica se i suoni di default esistono e li crea se necessario."""
@@ -169,7 +169,24 @@ class RiconoscitoreDifetti:
         # o si utilizzeranno i beep di sistema su Windows o pygame su Linux
         for name, path in self.sound_files.items():
             if not os.path.exists(path):
-                self.log(f"Suono '{name}' mancante. Verrà utilizzato un suono alternativo.")
+                print(f"Suono '{name}' mancante. Verrà utilizzato un suono alternativo.")
+    
+    def play_sound(self, sound_name):
+        """Riproduce un suono specifico."""
+        try:
+            if sound_name in self.sounds:
+                self.sounds[sound_name].play()
+            elif self.has_winsound:
+                # Frequenze per diversi tipi di suoni
+                frequencies = {"next": 800, "ok": 1000, "error": 500}
+                import winsound
+                winsound.Beep(frequencies.get(sound_name, 800), 200)
+            else:
+                # Genera un beep usando pygame
+                # Se non funziona, semplicemente passiamo
+                pass
+        except Exception as e:
+            print(f"Errore nella riproduzione del suono: {str(e)}")
     
     def load_image_list(self):
         """Carica la lista delle immagini dalla cartella."""
@@ -177,7 +194,7 @@ class RiconoscitoreDifetti:
             # Verifica che la cartella esista
             if not os.path.exists(self.image_folder):
                 os.makedirs(self.image_folder)
-                self.log(f"Cartella {self.image_folder} creata perché non esisteva.")
+                print(f"Cartella {self.image_folder} creata perché non esisteva.")
             
             # Ottieni tutti i file immagine dalla cartella
             valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
@@ -191,16 +208,16 @@ class RiconoscitoreDifetti:
             self.image_files.sort()
             
             if not self.image_files:
-                self.log(f"Nessuna immagine trovata nella cartella {self.image_folder}.")
+                print(f"Nessuna immagine trovata nella cartella {self.image_folder}.")
             else:
-                self.log(f"Trovate {len(self.image_files)} immagini nella cartella {self.image_folder}.")
+                print(f"Trovate {len(self.image_files)} immagini nella cartella {self.image_folder}.")
             
             # Reset dell'indice corrente e dello stato della scatola
             self.current_image_index = -1
             self.all_components_ok = True
                 
         except Exception as e:
-            self.log(f"Errore nel caricamento delle immagini: {str(e)}")
+            print(f"Errore nel caricamento delle immagini: {str(e)}")
     
     def reset_analysis(self):
         """Resetta l'analisi completa e torna alla prima immagine."""
@@ -223,7 +240,7 @@ class RiconoscitoreDifetti:
         self.image_label.config(text="Nessuna immagine selezionata")
         self.progress_label.config(text=f"0/{len(self.image_files)}")
         
-        self.log("Analisi resettata. Pronto per una nuova analisi.")
+        print("Analisi resettata. Pronto per una nuova analisi.")
     
     def create_widgets(self):
         # Crea un menu in alto
@@ -408,23 +425,44 @@ class RiconoscitoreDifetti:
         self.results_tree.insert("", "end", iid="lato_destro", values=("Lato Destro", "N/A", "", ""))
         self.results_tree.insert("", "end", iid="lato_inferiore", values=("Lato Inferiore", "N/A", "", ""))
         self.results_tree.insert("", "end", iid="lato_sinistro", values=("Lato Sinistro", "N/A", "", ""))
+    
+    def start_button_monitoring(self):
+        """Avvia il thread per monitorare il pulsante GPIO."""
+        self.button_running = True
+        self.button_thread = threading.Thread(target=self.monitor_button)
+        self.button_thread.daemon = True
+        self.button_thread.start()
+        print("Monitoraggio pulsante fisico avviato (PIN GPIO {})".format(PULSANTE))
+    
+    def monitor_button(self):
+        """Monitora il pulsante fisico e avanza all'immagine successiva quando premuto."""
+        previous_state = GPIO.input(PULSANTE)
+        debounce_time = 0.3  # Tempo di debounce in secondi
+        last_press_time = 0
         
-        # Log delle operazioni
-        log_frame = ttk.LabelFrame(right_frame, text="Log")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.log_text = tk.Text(log_frame, wrap=tk.WORD, height=8, width=30)
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        log_scrollbar = ttk.Scrollbar(self.log_text, orient=tk.VERTICAL, command=self.log_text.yview)
-        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_text.config(yscrollcommand=log_scrollbar.set)
+        while self.button_running:
+            current_state = GPIO.input(PULSANTE)
+            current_time = time.time()
+            
+            # Il pulsante è stato premuto (dal momento che usiamo pull-up, LOW = premuto)
+            if previous_state == 1 and current_state == 0 and (current_time - last_press_time) > debounce_time:
+                print("Pulsante fisico premuto")
+                last_press_time = current_time
+                
+                # Chiama next_image tramite il thread principale
+                self.root.after(0, self.next_image)
+            
+            previous_state = current_state
+            time.sleep(0.05)  # Piccola pausa per non sovraccaricare la CPU
     
     def next_image(self):
         """Passa all'immagine successiva nella cartella e la analizza."""
         if not self.image_files:
             messagebox.showinfo("Info", "Nessuna immagine disponibile nella cartella.")
             return
+        
+        # Riproduci il suono di cambio immagine
+        self.play_sound("next")
         
         self.current_image_index = (self.current_image_index + 1) % len(self.image_files)
         image_file = self.image_files[self.current_image_index]
@@ -446,7 +484,7 @@ class RiconoscitoreDifetti:
             # Processa l'immagine
             self.process_image()
             
-            self.log(f"Analisi immagine: {image_file}")
+            print(f"Analisi immagine: {image_file}")
             
             # Se questa è l'ultima immagine, verifica lo stato complessivo
             if self.current_image_index == len(self.image_files) - 1:
@@ -454,21 +492,24 @@ class RiconoscitoreDifetti:
             
         except Exception as e:
             # Riproduci suono di errore
-            self.log(f"Errore nel caricamento dell'immagine {image_file}: {str(e)}")
+            self.play_sound("error")
+            print(f"Errore nel caricamento dell'immagine {image_file}: {str(e)}")
     
     def check_all_components(self):
         """Verifica se tutti i componenti sono OK e attiva i LED appropriati."""
         # Controlla se ci sono stati difetti in tutte le immagini analizzate
         if self.all_components_ok:
-            self.log("RISULTATO FINALE: Tutti i componenti della scatola sono OK")
+            print("RISULTATO FINALE: Tutti i componenti della scatola sono OK")
             self.turn_on_led(LED_VERDE)
             self.update_led_indicators(LED_VERDE)
             # Riproduci suono positivo
+            self.play_sound("ok")
         else:
-            self.log("RISULTATO FINALE: Rilevati difetti in alcuni componenti della scatola")
+            print("RISULTATO FINALE: Rilevati difetti in alcuni componenti della scatola")
             self.turn_on_led(LED_ROSSO)
             self.update_led_indicators(LED_ROSSO)
             # Riproduci suono errore
+            self.play_sound("error")
     
     def turn_on_led(self, led_pin):
         """Accende il LED specificato e spegne l'altro."""
@@ -488,7 +529,7 @@ class RiconoscitoreDifetti:
         self.led_green_indicator.itemconfig("green_led", fill="lightgray")
         self.led_red_indicator.itemconfig("red_led", fill="lightgray")
         
-        self.log("LED spenti")
+        print("LED spenti")
     
     def test_led(self, led_pin):
         """Testa il LED specifico accendendolo per 2 secondi."""
@@ -500,7 +541,7 @@ class RiconoscitoreDifetti:
         
         # Messaggio di log
         led_name = "verde" if led_pin == LED_VERDE else "rosso"
-        self.log(f"Test LED {led_name} attivo")
+        print(f"Test LED {led_name} attivo")
         
         # Programma lo spegnimento dopo 2 secondi
         self.root.after(2000, self.turn_off_leds)
@@ -558,16 +599,16 @@ class RiconoscitoreDifetti:
             
             # Salva l'immagine corrente
             cv2.imwrite(save_path, self.processed_images[self.current_view])
-            self.log(f"Immagine salvata: {save_path}")
+            print(f"Immagine salvata: {save_path}")
             
         except Exception as e:
             messagebox.showerror("Errore", f"Impossibile salvare l'immagine: {str(e)}")
-            self.log(f"Errore nel salvataggio dell'immagine: {str(e)}")
+            print(f"Errore nel salvataggio dell'immagine: {str(e)}")
             
     def process_image(self):
         """Elabora l'immagine corrente con segmentazione avanzata."""
         if self.original_image is None:
-            self.log("Attenzione: Nessuna immagine disponibile per l'analisi.")
+            print("Attenzione: Nessuna immagine disponibile per l'analisi.")
             return
         
         try:
@@ -662,8 +703,125 @@ class RiconoscitoreDifetti:
             self.current_view = "Risultato Analisi"
             
             # Log dei risultati
-            self.log(f"Analisi completata. Stato dell'immagine: {status_text}. {total_defect_percent:.2f}% area totale difettata.")
+            print(f"Analisi completata. Stato dell'immagine: {status_text}. {total_defect_percent:.2f}% area totale difettata.")
         
         except Exception as e:
-            self.log(f"Errore durante l'elaborazione dell'immagine: {str(e)}")
+            print(f"Errore durante l'elaborazione dell'immagine: {str(e)}")
             messagebox.showerror("Errore", f"Si è verificato un errore durante l'elaborazione: {str(e)}")
+            
+            def detect_edge_issues(self, gray_img):
+                """Rileva problemi nei bordi come lati storti o danneggiati."""
+                try:
+                    # Applica Canny per rilevare i bordi
+                    edges = cv2.Canny(gray_img, self.soglia_canny_min, self.soglia_canny_max)
+                    
+                    # Dilata i bordi per una migliore visualizzazione
+                    kernel = np.ones((3, 3), np.uint8)
+                    dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+                    
+                    # Trova linee con Hough Transform
+                    lines = cv2.HoughLinesP(dilated_edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
+                    
+                    # Crea una maschera per memorizzare le aree problematiche
+                    edge_mask = np.zeros_like(gray_img)
+                    
+                    # Se ci sono linee, analizzale
+                    if lines is not None:
+                        # Calcola l'orientamento principale delle linee
+                        angles = []
+                        for line in lines:
+                            x1, y1, x2, y2 = line[0]
+                            if x2 - x1 == 0:  # Evita divisione per zero
+                                angle = 90
+                            else:
+                                angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
+                            angles.append(angle)
+                        
+                        # Trova l'angolo mediano (orientamento principale)
+                        median_angle = np.median(angles) if angles else 0
+                        
+                        # Identifica linee che deviano significativamente dall'orientamento principale
+                        threshold_angle = 15  # Soglia di deviazione in gradi
+                        for line in lines:
+                            x1, y1, x2, y2 = line[0]
+                            if x2 - x1 == 0:
+                                angle = 90
+                            else:
+                                angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
+                            
+                            # Se la linea devia dall'orientamento principale, marcala come problematica
+                            if np.abs(angle - median_angle) > threshold_angle:
+                                cv2.line(edge_mask, (x1, y1), (x2, y2), 255, 2)
+                    
+                    return edge_mask
+                except Exception as e:
+                    print(f"Errore nel rilevamento dei bordi: {str(e)}")
+                    return np.zeros_like(gray_img)
+    
+    def display_image(self, image):
+        """Visualizza un'immagine nel canvas."""
+        if image is None:
+            return
+        
+        try:
+            # Ottieni le dimensioni del canvas
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            # Se il canvas non è ancora stato renderizzato, usa dimensioni di backup
+            if canvas_width < 50 or canvas_height < 50:
+                canvas_width = 700
+                canvas_height = 600
+            
+            # Dimensioni originali dell'immagine
+            height, width = image.shape[:2]
+            
+            # Calcola il fattore di scala per adattare l'immagine al canvas
+            scale = min(canvas_width/width, canvas_height/height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            
+            # Ridimensiona l'immagine
+            resized = cv2.resize(image, (new_width, new_height))
+            
+            # Converti da BGR a RGB per PIL
+            display_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            
+            # Converti in formato PIL
+            pil_image = Image.fromarray(display_image)
+            
+            # Converti in formato Tkinter
+            tk_image = ImageTk.PhotoImage(image=pil_image)
+            
+            # Salva un riferimento all'immagine (per evitare il garbage collection)
+            self.tk_image = tk_image
+            
+            # Mostra l'immagine nel canvas
+            self.canvas.delete("all")
+            self.canvas.create_image(canvas_width//2, canvas_height//2, image=tk_image)
+            
+        except Exception as e:
+            print(f"Errore nella visualizzazione dell'immagine: {str(e)}")
+    
+    def change_view(self, event=None):
+        """Cambia la visualizzazione corrente."""
+        view_name = self.view_var.get()
+        if view_name in self.processed_images:
+            self.display_image(self.processed_images[view_name])
+            self.current_view = view_name
+    
+    def on_close(self):
+        """Funzione chiamata quando si chiude l'applicazione."""
+        # Ferma il thread di monitoraggio del pulsante
+        self.button_running = False
+        if self.button_thread and self.button_thread.is_alive():
+            self.button_thread.join(1.0)  # Attendi max 1 secondo
+        
+        # Spegni i LED prima di uscire
+        self.turn_off_leds()
+        self.root.destroy()
+
+
+# Esegue il programma principale se lo script viene eseguito direttamente
+if __name__ == "__main__":
+    main()
