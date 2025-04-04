@@ -8,19 +8,24 @@ import threading
 import time
 import cv2
 import RPi.GPIO as GPIO  # Importa la libreria GPIO per Raspberry Pi
+import pygame  # Per la riproduzione di suoni
 
-# Configurazione GPIO per i LED
+# Configurazione GPIO per i LED e pulsante
 LED_VERDE = 17  # Pin GPIO per LED verde (OK)
 LED_ROSSO = 27  # Pin GPIO per LED rosso (Difetti)
+PULSANTE = 25   # Pin GPIO per pulsante Next
 
 def setup_gpio():
-    """Configura i pin GPIO per i LED."""
+    """Configura i pin GPIO per i LED e pulsante."""
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
     
-    # Configura i pin come output
+    # Configura i pin LED come output
     GPIO.setup(LED_VERDE, GPIO.OUT)
     GPIO.setup(LED_ROSSO, GPIO.OUT)
+    
+    # Configura il pin pulsante come input con pull-up
+    GPIO.setup(PULSANTE, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     
     # Inizialmente spegni entrambi i LED
     GPIO.output(LED_VERDE, GPIO.LOW)
@@ -32,13 +37,17 @@ def main():
         import cv2
         import numpy as np
         from PIL import Image, ImageTk
+        import pygame
     except ImportError as e:
         print(f"ERRORE: Manca una dipendenza richiesta: {e}")
-        print("Installa le dipendenze con: pip install opencv-python numpy pillow")
+        print("Installa le dipendenze con: pip install opencv-python numpy pillow pygame")
         sys.exit(1)
 
     # Configura i GPIO
     setup_gpio()
+    
+    # Inizializza pygame per i suoni
+    pygame.mixer.init()
     
     root = tk.Tk()
     root.title("Riconoscitore Difetti - Raspberry Pi")
@@ -97,14 +106,70 @@ class RiconoscitoreDifetti:
         # Stato complessivo della scatola
         self.all_components_ok = True
         
+        # Thread per il monitoraggio del pulsante
+        self.button_thread = None
+        self.button_running = False
+        
+        # Caricamento dei suoni
+        self.setup_sounds()
+        
         # Crea l'interfaccia utente
         self.create_widgets()
         
         # Testo iniziale per l'applicazione
         self.log("Applicazione avviata. Premi 'Prossima Immagine' per analizzare le immagini nella cartella.")
         
+        # Avvia il thread di monitoraggio del pulsante
+        self.start_button_monitoring()
+        
         # Imposta la routine di chiusura
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+    def setup_sounds(self):
+        """Configura i suoni utilizzati nell'applicazione."""
+        self.sounds = {}
+        
+        # Crea cartella dei suoni se non esiste
+        sound_folder = "sounds"
+        if not os.path.exists(sound_folder):
+            os.makedirs(sound_folder)
+            self.log(f"Cartella {sound_folder} creata.")
+        
+        # Percorsi dei file audio
+        self.sound_files = {
+            "next": os.path.join(sound_folder, "next.wav"),
+            "ok": os.path.join(sound_folder, "ok.wav"),
+            "error": os.path.join(sound_folder, "error.wav")
+        }
+        
+        # Verifica e crea suoni di default se mancanti
+        self.check_default_sounds()
+        
+        # Carica i suoni
+        try:
+            for name, path in self.sound_files.items():
+                if os.path.exists(path):
+                    self.sounds[name] = pygame.mixer.Sound(path)
+                    self.log(f"Suono '{name}' caricato.")
+                else:
+                    self.log(f"File suono '{path}' non trovato.")
+        except Exception as e:
+            self.log(f"Errore nel caricamento dei suoni: {str(e)}")
+    
+    def check_default_sounds(self):
+        """Verifica se i suoni di default esistono e li crea se necessario."""
+        # Controllo se è necessario utilizzare beep di sistema
+        try:
+            import winsound
+            self.has_winsound = True
+        except ImportError:
+            self.has_winsound = False
+        
+        # Questa è solo una verifica, i file audio devono essere forniti manualmente
+        # o si utilizzeranno i beep di sistema su Windows o pygame su Linux
+        for name, path in self.sound_files.items():
+            if not os.path.exists(path):
+                self.log(f"Suono '{name}' mancante. Verrà utilizzato un suono alternativo.")
     
     def load_image_list(self):
         """Carica la lista delle immagini dalla cartella."""
@@ -129,9 +194,36 @@ class RiconoscitoreDifetti:
                 self.log(f"Nessuna immagine trovata nella cartella {self.image_folder}.")
             else:
                 self.log(f"Trovate {len(self.image_files)} immagini nella cartella {self.image_folder}.")
+            
+            # Reset dell'indice corrente e dello stato della scatola
+            self.current_image_index = -1
+            self.all_components_ok = True
                 
         except Exception as e:
             self.log(f"Errore nel caricamento delle immagini: {str(e)}")
+    
+    def reset_analysis(self):
+        """Resetta l'analisi completa e torna alla prima immagine."""
+        self.all_components_ok = True
+        self.current_image_index = -1
+        
+        # Spegni i LED
+        self.turn_off_leds()
+        
+        # Cancella risultati precedenti
+        for area in self.area_results:
+            self.area_results[area] = {"ok": True, "difetti": [], "percentuale": 0.0}
+            self.results_tree.item(area, values=(area.replace("_", " ").title(), "N/A", "", ""))
+        
+        # Cancella il canvas
+        self.canvas.delete("all")
+        self.canvas.create_text(350, 300, text="Premi 'Prossima Immagine' per iniziare", fill="gray", font=("Arial", 14))
+        
+        # Reset etichette
+        self.image_label.config(text="Nessuna immagine selezionata")
+        self.progress_label.config(text=f"0/{len(self.image_files)}")
+        
+        self.log("Analisi resettata. Pronto per una nuova analisi.")
     
     def create_widgets(self):
         # Crea un menu in alto
@@ -174,6 +266,14 @@ class RiconoscitoreDifetti:
             command=self.next_image
         )
         self.next_button.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Reset analisi completa
+        reset_button = ttk.Button(
+            control_frame, 
+            text="Reset Analisi", 
+            command=self.reset_analysis
+        )
+        reset_button.pack(fill=tk.X, padx=10, pady=10)
         
         # Etichetta per mostrare il nome dell'immagine corrente
         self.image_label = ttk.Label(control_frame, text="Nessuna immagine selezionata")
@@ -353,6 +453,7 @@ class RiconoscitoreDifetti:
                 self.check_all_components()
             
         except Exception as e:
+            # Riproduci suono di errore
             self.log(f"Errore nel caricamento dell'immagine {image_file}: {str(e)}")
     
     def check_all_components(self):
@@ -362,10 +463,12 @@ class RiconoscitoreDifetti:
             self.log("RISULTATO FINALE: Tutti i componenti della scatola sono OK")
             self.turn_on_led(LED_VERDE)
             self.update_led_indicators(LED_VERDE)
+            # Riproduci suono positivo
         else:
             self.log("RISULTATO FINALE: Rilevati difetti in alcuni componenti della scatola")
             self.turn_on_led(LED_ROSSO)
             self.update_led_indicators(LED_ROSSO)
+            # Riproduci suono errore
     
     def turn_on_led(self, led_pin):
         """Accende il LED specificato e spegne l'altro."""
@@ -510,7 +613,7 @@ class RiconoscitoreDifetti:
                 # Aggiungi testo con percentuale difetti
                 text = f"{area.replace('_', ' ').title()}: {data['percentuale']:.1f}%"
                 cv2.putText(combined_result, text, (x1 + 5, y1 + 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
             self.processed_images["Risultato Analisi"] = combined_result
             
@@ -564,91 +667,3 @@ class RiconoscitoreDifetti:
         except Exception as e:
             self.log(f"Errore durante l'elaborazione dell'immagine: {str(e)}")
             messagebox.showerror("Errore", f"Si è verificato un errore durante l'elaborazione: {str(e)}")
-    def segment_image(self, image):
-        """Segmenta l'immagine in base (centro) e 4 lati (superiore, inferiore, sinistro, destro)."""
-        height, width = image.shape[:2]
-        
-        # Calcola la dimensione del quadrato centrale (base)
-        base_size = min(width, height) * self.base_roi_percent / 100
-        
-        # Calcola le coordinate del quadrato centrale
-        center_x, center_y = width // 2, height // 2
-        half_size = base_size // 2
-        
-        # Definisci le coordinate delle regioni (x1, y1, x2, y2)
-        # Base (centro)
-        base_x1 = int(center_x - half_size)
-        base_y1 = int(center_y - half_size)
-        base_x2 = int(center_x + half_size)
-        base_y2 = int(center_y + half_size)
-        
-        # Lato superiore
-        top_x1 = base_x1
-        top_y1 = 0
-        top_x2 = base_x2
-        top_y2 = base_y1
-        
-        # Lato destro
-        right_x1 = base_x2
-        right_y1 = base_y1
-        right_x2 = width
-        right_y2 = base_y2
-        
-        # Lato inferiore
-        bottom_x1 = base_x1
-        bottom_y1 = base_y2
-        bottom_x2 = base_x2
-        bottom_y2 = height
-        
-        # Lato sinistro
-        left_x1 = 0
-        left_y1 = base_y1
-        left_x2 = base_x1
-        left_y2 = base_y2
-        
-        # Crea una copia dell'immagine per visualizzare la segmentazione
-        segmented_img = image.copy()
-        
-        # Disegna rettangoli per visualizzare le regioni
-        # Base (centro) - giallo
-        cv2.rectangle(segmented_img, (base_x1, base_y1), (base_x2, base_y2), (0, 255, 255), 2)
-        cv2.putText(segmented_img, "Base", (base_x1 + 10, base_y1 + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-        
-        # Lato superiore - blu
-        cv2.rectangle(segmented_img, (top_x1, top_y1), (top_x2, top_y2), (255, 0, 0), 2)
-        cv2.putText(segmented_img, "Lato Sup", (top_x1 + 10, top_y1 + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        
-        # Lato destro - verde
-        cv2.rectangle(segmented_img, (right_x1, right_y1), (right_x2, right_y2), (0, 255, 0), 2)
-        cv2.putText(segmented_img, "Lato Dx", (right_x1 + 10, right_y1 + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        # Lato inferiore - rosso
-        cv2.rectangle(segmented_img, (bottom_x1, bottom_y1), (bottom_x2, bottom_y2), (0, 0, 255), 2)
-        cv2.putText(segmented_img, "Lato Inf", (bottom_x1 + 10, bottom_y1 + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-        
-        # Lato sinistro - ciano
-        cv2.rectangle(segmented_img, (left_x1, left_y1), (left_x2, left_y2), (255, 255, 0), 2)
-        cv2.putText(segmented_img, "Lato Sx", (left_x1 + 10, left_y1 + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-        
-        # Estrai le regioni dall'immagine originale
-        base_region = image[base_y1:base_y2, base_x1:base_x2].copy()
-        top_region = image[top_y1:top_y2, top_x1:top_x2].copy() if top_y2 > top_y1 else None
-        right_region = image[right_y1:right_y2, right_x1:right_x2].copy() if right_x2 > right_x1 else None
-        bottom_region = image[bottom_y1:bottom_y2, bottom_x1:bottom_x2].copy() if bottom_y2 > bottom_y1 else None
-        left_region = image[left_y1:left_y2, left_x1:left_x2].copy() if left_x2 > left_x1 else None
-        
-        # Coordinate delle regioni per riferimento futuro
-        regions = {
-            "base": {"img": base_region, "coords": (base_x1, base_y1, base_x2, base_y2)},
-            "lato_superiore": {"img": top_region, "coords": (top_x1, top_y1, top_x2, top_y2)},
-            "lato_destro": {"img": right_region, "coords": (right_x1, right_y1, right_x2, right_y2)},
-            "lato_inferiore": {"img": bottom_region, "coords": (bottom_x1, bottom_y1, bottom_x2, bottom_y2)},
-            "lato_sinistro": {"img": left_region, "coords": (left_x1, left_y1, left_x2, left_y2)}
-        }
-        
-        return segmented_img, regions
