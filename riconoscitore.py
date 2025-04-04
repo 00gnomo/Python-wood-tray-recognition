@@ -604,7 +604,96 @@ class RiconoscitoreDifetti:
         except Exception as e:
             messagebox.showerror("Errore", f"Impossibile salvare l'immagine: {str(e)}")
             print(f"Errore nel salvataggio dell'immagine: {str(e)}")
-            
+    
+    def segment_image(self, image):
+        """Segmenta l'immagine in base (centro) e 4 lati (superiore, inferiore, sinistro, destro)."""
+        height, width = image.shape[:2]
+        
+        # Calcola la dimensione del quadrato centrale (base)
+        base_size = min(width, height) * self.base_roi_percent / 100
+        
+        # Calcola le coordinate del quadrato centrale
+        center_x, center_y = width // 2, height // 2
+        half_size = base_size // 2
+        
+        # Definisci le coordinate delle regioni (x1, y1, x2, y2)
+        # Base (centro)
+        base_x1 = int(center_x - half_size)
+        base_y1 = int(center_y - half_size)
+        base_x2 = int(center_x + half_size)
+        base_y2 = int(center_y + half_size)
+        
+        # Lato superiore
+        top_x1 = base_x1
+        top_y1 = 0
+        top_x2 = base_x2
+        top_y2 = base_y1
+        
+        # Lato destro
+        right_x1 = base_x2
+        right_y1 = base_y1
+        right_x2 = width
+        right_y2 = base_y2
+        
+        # Lato inferiore
+        bottom_x1 = base_x1
+        bottom_y1 = base_y2
+        bottom_x2 = base_x2
+        bottom_y2 = height
+        
+        # Lato sinistro
+        left_x1 = 0
+        left_y1 = base_y1
+        left_x2 = base_x1
+        left_y2 = base_y2
+        
+        # Crea una copia dell'immagine per visualizzare la segmentazione
+        segmented_img = image.copy()
+        
+        # Disegna rettangoli per visualizzare le regioni
+        # Base (centro) - giallo
+        cv2.rectangle(segmented_img, (base_x1, base_y1), (base_x2, base_y2), (0, 255, 255), 2)
+        cv2.putText(segmented_img, "Base", (base_x1 + 10, base_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        
+        # Lato superiore - blu
+        cv2.rectangle(segmented_img, (top_x1, top_y1), (top_x2, top_y2), (255, 0, 0), 2)
+        cv2.putText(segmented_img, "Lato Sup", (top_x1 + 10, top_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        
+        # Lato destro - verde
+        cv2.rectangle(segmented_img, (right_x1, right_y1), (right_x2, right_y2), (0, 255, 0), 2)
+        cv2.putText(segmented_img, "Lato Dx", (right_x1 + 10, right_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Lato inferiore - rosso
+        cv2.rectangle(segmented_img, (bottom_x1, bottom_y1), (bottom_x2, bottom_y2), (0, 0, 255), 2)
+        cv2.putText(segmented_img, "Lato Inf", (bottom_x1 + 10, bottom_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        # Lato sinistro - ciano
+        cv2.rectangle(segmented_img, (left_x1, left_y1), (left_x2, left_y2), (255, 255, 0), 2)
+        cv2.putText(segmented_img, "Lato Sx", (left_x1 + 10, left_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        
+        # Estrai le regioni dall'immagine originale
+        base_region = image[base_y1:base_y2, base_x1:base_x2].copy()
+        top_region = image[top_y1:top_y2, top_x1:top_x2].copy() if top_y2 > top_y1 else None
+        right_region = image[right_y1:right_y2, right_x1:right_x2].copy() if right_x2 > right_x1 else None
+        bottom_region = image[bottom_y1:bottom_y2, bottom_x1:bottom_x2].copy() if bottom_y2 > bottom_y1 else None
+        left_region = image[left_y1:left_y2, left_x1:left_x2].copy() if left_x2 > left_x1 else None
+        
+        # Coordinate delle regioni per riferimento futuro
+        regions = {
+            "base": {"img": base_region, "coords": (base_x1, base_y1, base_x2, base_y2)},
+            "lato_superiore": {"img": top_region, "coords": (top_x1, top_y1, top_x2, top_y2)},
+            "lato_destro": {"img": right_region, "coords": (right_x1, right_y1, right_x2, right_y2)},
+            "lato_inferiore": {"img": bottom_region, "coords": (bottom_x1, bottom_y1, bottom_x2, bottom_y2)},
+            "lato_sinistro": {"img": left_region, "coords": (left_x1, left_y1, left_x2, left_y2)}
+        }
+        
+        return segmented_img, regions
+    
     def process_image(self):
         """Elabora l'immagine corrente con segmentazione avanzata."""
         if self.original_image is None:
@@ -708,56 +797,195 @@ class RiconoscitoreDifetti:
         except Exception as e:
             print(f"Errore durante l'elaborazione dell'immagine: {str(e)}")
             messagebox.showerror("Errore", f"Si è verificato un errore durante l'elaborazione: {str(e)}")
-            
-            def detect_edge_issues(self, gray_img):
-                """Rileva problemi nei bordi come lati storti o danneggiati."""
-                try:
-                    # Applica Canny per rilevare i bordi
-                    edges = cv2.Canny(gray_img, self.soglia_canny_min, self.soglia_canny_max)
-                    
-                    # Dilata i bordi per una migliore visualizzazione
-                    kernel = np.ones((3, 3), np.uint8)
-                    dilated_edges = cv2.dilate(edges, kernel, iterations=1)
-                    
-                    # Trova linee con Hough Transform
-                    lines = cv2.HoughLinesP(dilated_edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
-                    
-                    # Crea una maschera per memorizzare le aree problematiche
-                    edge_mask = np.zeros_like(gray_img)
-                    
-                    # Se ci sono linee, analizzale
-                    if lines is not None:
-                        # Calcola l'orientamento principale delle linee
-                        angles = []
-                        for line in lines:
-                            x1, y1, x2, y2 = line[0]
-                            if x2 - x1 == 0:  # Evita divisione per zero
-                                angle = 90
-                            else:
-                                angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
-                            angles.append(angle)
-                        
-                        # Trova l'angolo mediano (orientamento principale)
-                        median_angle = np.median(angles) if angles else 0
-                        
-                        # Identifica linee che deviano significativamente dall'orientamento principale
-                        threshold_angle = 15  # Soglia di deviazione in gradi
-                        for line in lines:
-                            x1, y1, x2, y2 = line[0]
-                            if x2 - x1 == 0:
-                                angle = 90
-                            else:
-                                angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
-                            
-                            # Se la linea devia dall'orientamento principale, marcala come problematica
-                            if np.abs(angle - median_angle) > threshold_angle:
-                                cv2.line(edge_mask, (x1, y1), (x2, y2), 255, 2)
-                    
-                    return edge_mask
-                except Exception as e:
-                    print(f"Errore nel rilevamento dei bordi: {str(e)}")
-                    return np.zeros_like(gray_img)
     
+    def analyze_region(self, region_name, region_data, region_type):
+        """Analizza una regione specifica dell'immagine e identifica i difetti."""
+        if region_data["img"] is None:
+            self.area_results[region_name]["ok"] = False
+            self.area_results[region_name]["difetti"].append("Regione mancante")
+            self.area_results[region_name]["percentuale"] = 100.0
+            return
+        
+        img = region_data["img"]
+        result_mask = None
+        defect_percentage = 0.0
+        defects = []
+        
+        # Converti in scala di grigi se necessario
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img.copy()
+        
+        # 1. Analisi per zone scure (buchi, nodi, ecc.)
+        dark_mask = self.detect_dark_features(gray)
+        
+        # 2. Analisi per zone chiare/rosse
+        bright_mask = self.detect_bright_features(gray)
+        
+        # 3. Analisi dei bordi/contorni (per lati storti o danneggiati)
+        edge_mask = None
+        if region_type == "lato":
+            edge_mask = self.detect_edge_issues(gray)
+        
+        # Combina le maschere per ottenere una maschera totale dei difetti
+        combined_mask = np.zeros_like(gray)
+        if dark_mask is not None:
+            combined_mask = cv2.bitwise_or(combined_mask, dark_mask)
+        if bright_mask is not None:
+            combined_mask = cv2.bitwise_or(combined_mask, bright_mask)
+        if edge_mask is not None:
+            combined_mask = cv2.bitwise_or(combined_mask, edge_mask)
+        
+        # Calcola la percentuale di area difettata
+        total_pixels = gray.shape[0] * gray.shape[1]
+        if total_pixels > 0:
+            defect_pixels = cv2.countNonZero(combined_mask)
+            defect_percentage = (defect_pixels / total_pixels) * 100
+        
+        # Determina i tipi di difetti presenti
+        if dark_mask is not None and cv2.countNonZero(dark_mask) > 0:
+            if region_type == "base":
+                defects.append("Nodi/buchi scuri")
+            else:
+                defects.append("Zone scure")
+        
+        if bright_mask is not None and cv2.countNonZero(bright_mask) > 0:
+            if region_type == "base":
+                defects.append("Irregolarità chiare")
+            else:
+                defects.append("Zone chiare/danneggiate")
+        
+        if edge_mask is not None and cv2.countNonZero(edge_mask) > 0:
+            defects.append("Bordi irregolari/storti")
+        
+        # Determina se la regione è OK o difettata (basato sulla percentuale)
+        is_ok = defect_percentage <= self.soglia_difetti
+        
+        # Salva i risultati
+        self.area_results[region_name]["ok"] = is_ok
+        self.area_results[region_name]["difetti"] = defects
+        self.area_results[region_name]["percentuale"] = defect_percentage
+        self.area_results[region_name]["mask"] = combined_mask
+        
+        # Crea visualizzazione per questa regione
+        region_result = None
+        if len(img.shape) == 3:
+            region_result = img.copy()
+            # Sovrapponi maschera in rosso
+            overlay = img.copy()
+            overlay[combined_mask > 0] = [0, 0, 255]  # Rosso
+            cv2.addWeighted(overlay, 0.5, region_result, 0.5, 0, region_result)
+            
+            # Aggiungi informazioni
+            cv2.putText(region_result, f"{region_name.replace('_', ' ').title()}", (10, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            cv2.putText(region_result, f"Difetti: {defect_percentage:.2f}%", (10, 40), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255) if not is_ok else (0, 255, 0), 2)
+        
+        # Salva l'immagine elaborata nelle viste disponibili
+        if region_result is not None:
+            self.processed_images[f"Analisi {region_name.replace('_', ' ').title()}"] = region_result
+    
+    def detect_dark_features(self, gray_img):
+        """Rileva caratteristiche scure come buchi, nodi, ecc."""
+        try:
+            # Applica soglia per individuare le aree scure
+            _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_scuro, 255, cv2.THRESH_BINARY_INV)
+            
+            # Operazioni morfologiche per migliorare il rilevamento
+            kernel = np.ones((3, 3), np.uint8)
+            processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
+            
+            # Filtra aree troppo piccole (rumore)
+            contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_area = 10  # Area minima in pixel
+            filtered_mask = np.zeros_like(processed_mask)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area >= min_area:
+                    cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+            
+            return filtered_mask
+        except Exception as e:
+            print(f"Errore nel rilevamento delle zone scure: {str(e)}")
+            return np.zeros_like(gray_img)
+    
+    def detect_bright_features(self, gray_img):
+        """Rileva caratteristiche chiare/rosse come graffi, danni, ecc."""
+        try:
+            # Applica soglia per individuare le aree chiare
+            _, threshold_img = cv2.threshold(gray_img, self.soglia_colore_chiaro, 255, cv2.THRESH_BINARY)
+            
+            # Operazioni morfologiche per migliorare il rilevamento
+            kernel = np.ones((3, 3), np.uint8)
+            processed_mask = cv2.morphologyEx(threshold_img, cv2.MORPH_OPEN, kernel)
+            
+            # Filtra aree troppo piccole (rumore)
+            contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_area = 10  # Area minima in pixel
+            filtered_mask = np.zeros_like(processed_mask)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area >= min_area:
+                    cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+            
+            return filtered_mask
+        except Exception as e:
+            print(f"Errore nel rilevamento delle zone chiare: {str(e)}")
+            return np.zeros_like(gray_img)
+    
+    def detect_edge_issues(self, gray_img):
+        """Rileva problemi nei bordi come lati storti o danneggiati."""
+        try:
+            # Applica Canny per rilevare i bordi
+            edges = cv2.Canny(gray_img, self.soglia_canny_min, self.soglia_canny_max)
+            
+            # Dilata i bordi per una migliore visualizzazione
+            kernel = np.ones((3, 3), np.uint8)
+            dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+            
+            # Trova linee con Hough Transform
+            lines = cv2.HoughLinesP(dilated_edges, 1, np.pi/180, 50, minLineLength=30, maxLineGap=10)
+            
+            # Crea una maschera per memorizzare le aree problematiche
+            edge_mask = np.zeros_like(gray_img)
+            
+            # Se ci sono linee, analizzale
+            if lines is not None:
+                # Calcola l'orientamento principale delle linee
+                angles = []
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    if x2 - x1 == 0:  # Evita divisione per zero
+                        angle = 90
+                    else:
+                        angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
+                    angles.append(angle)
+                
+                # Trova l'angolo mediano (orientamento principale)
+                median_angle = np.median(angles) if angles else 0
+                
+                # Identifica linee che deviano significativamente dall'orientamento principale
+                threshold_angle = 15  # Soglia di deviazione in gradi
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    if x2 - x1 == 0:
+                        angle = 90
+                    else:
+                        angle = np.abs(np.arctan((y2 - y1) / (x2 - x1)) * 180 / np.pi)
+                    
+                    # Se la linea devia dall'orientamento principale, marcala come problematica
+                    if np.abs(angle - median_angle) > threshold_angle:
+                        cv2.line(edge_mask, (x1, y1), (x2, y2), 255, 2)
+            
+            return edge_mask
+        except Exception as e:
+            print(f"Errore nel rilevamento dei bordi: {str(e)}")
+            return np.zeros_like(gray_img)
+            
     def display_image(self, image):
         """Visualizza un'immagine nel canvas."""
         if image is None:
