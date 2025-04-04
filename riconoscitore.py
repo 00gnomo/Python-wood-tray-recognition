@@ -1,12 +1,30 @@
-import cv2
 import numpy as np
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, messagebox
 from PIL import Image, ImageTk
 import os
 import sys
 import threading
 import time
+import cv2
+import RPi.GPIO as GPIO  # Importa la libreria GPIO per Raspberry Pi
+
+# Configurazione GPIO per i LED
+LED_VERDE = 17  # Pin GPIO per LED verde (OK)
+LED_ROSSO = 27  # Pin GPIO per LED rosso (Difetti)
+
+def setup_gpio():
+    """Configura i pin GPIO per i LED."""
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    
+    # Configura i pin come output
+    GPIO.setup(LED_VERDE, GPIO.OUT)
+    GPIO.setup(LED_ROSSO, GPIO.OUT)
+    
+    # Inizialmente spegni entrambi i LED
+    GPIO.output(LED_VERDE, GPIO.LOW)
+    GPIO.output(LED_ROSSO, GPIO.LOW)
 
 def main():
     # Verifica le dipendenze richieste
@@ -19,15 +37,21 @@ def main():
         print("Installa le dipendenze con: pip install opencv-python numpy pillow")
         sys.exit(1)
 
+    # Configura i GPIO
+    setup_gpio()
+    
     root = tk.Tk()
-    root.title("Riconoscitore Difetti - Webcam")
-    root.geometry("1000x700")
+    root.title("Riconoscitore Difetti - Raspberry Pi")
+    root.geometry("1200x800")
     
     # Crea e configura l'applicazione
     app = RiconoscitoreDifetti(root)
     
     # Avvia il loop principale
     root.mainloop()
+    
+    # Cleanup GPIO quando si chiude l'applicazione
+    GPIO.cleanup()
 
 class RiconoscitoreDifetti:
     def __init__(self, root):
@@ -42,11 +66,18 @@ class RiconoscitoreDifetti:
         # Valore soglia per zone chiare/rosse (0-255)
         self.soglia_colore_chiaro = 200
         
-        # Variabili per la webcam
-        self.capture = None
-        self.is_capturing = False
-        self.capture_thread = None
-        self.camera_index = 0  # Indice della webcam (0 = predefinita)
+        # Valore soglia per rilevamento bordi
+        self.soglia_canny_min = 50
+        self.soglia_canny_max = 150
+        
+        # Parametri per la segmentazione
+        self.base_roi_percent = 40  # % dell'immagine che rappresenta la base
+        
+        # Lista delle immagini nella cartella e indice corrente
+        self.image_folder = "img"
+        self.image_files = []
+        self.current_image_index = -1
+        self.load_image_list()
         
         # Percorso dell'immagine corrente
         self.image_path = None
@@ -54,14 +85,53 @@ class RiconoscitoreDifetti:
         self.processed_images = {}
         self.current_view = None
         
+        # Risultati dell'analisi per area
+        self.area_results = {
+            "base": {"ok": True, "difetti": [], "percentuale": 0.0},
+            "lato_superiore": {"ok": True, "difetti": [], "percentuale": 0.0},
+            "lato_destro": {"ok": True, "difetti": [], "percentuale": 0.0},
+            "lato_inferiore": {"ok": True, "difetti": [], "percentuale": 0.0},
+            "lato_sinistro": {"ok": True, "difetti": [], "percentuale": 0.0}
+        }
+        
+        # Stato complessivo della scatola
+        self.all_components_ok = True
+        
         # Crea l'interfaccia utente
         self.create_widgets()
         
         # Testo iniziale per l'applicazione
-        self.log("Applicazione avviata. Premi 'Avvia webcam' per iniziare.")
+        self.log("Applicazione avviata. Premi 'Prossima Immagine' per analizzare le immagini nella cartella.")
         
         # Imposta la routine di chiusura
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+    
+    def load_image_list(self):
+        """Carica la lista delle immagini dalla cartella."""
+        try:
+            # Verifica che la cartella esista
+            if not os.path.exists(self.image_folder):
+                os.makedirs(self.image_folder)
+                self.log(f"Cartella {self.image_folder} creata perché non esisteva.")
+            
+            # Ottieni tutti i file immagine dalla cartella
+            valid_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+            self.image_files = [
+                f for f in os.listdir(self.image_folder) 
+                if os.path.isfile(os.path.join(self.image_folder, f)) and 
+                os.path.splitext(f)[1].lower() in valid_extensions
+            ]
+            
+            # Ordina i file alfabeticamente
+            self.image_files.sort()
+            
+            if not self.image_files:
+                self.log(f"Nessuna immagine trovata nella cartella {self.image_folder}.")
+            else:
+                self.log(f"Trovate {len(self.image_files)} immagini nella cartella {self.image_folder}.")
+                
+        except Exception as e:
+            self.log(f"Errore nel caricamento delle immagini: {str(e)}")
     
     def create_widgets(self):
         # Crea un menu in alto
@@ -71,27 +141,23 @@ class RiconoscitoreDifetti:
         # Menu File
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Ricarica Lista Immagini", command=self.load_image_list)
         file_menu.add_command(label="Salva Immagine Corrente", command=self.save_current_image)
         file_menu.add_separator()
         file_menu.add_command(label="Esci", command=self.root.quit)
-        
-        # Menu Elaborazione
-        process_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Elaborazione", menu=process_menu)
-        process_menu.add_command(label="Scatta e Analizza", command=self.capture_and_analyze)
         
         # Crea un frame principale diviso in due parti
         main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main_paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Pannello sinistro (visualizzazione immagine)
-        left_frame = ttk.LabelFrame(main_paned, text="Visualizzazione Webcam")
+        left_frame = ttk.LabelFrame(main_paned, text="Visualizzazione")
         main_paned.add(left_frame, weight=3)
         
         # Canvas per mostrare l'immagine
-        self.canvas = tk.Canvas(left_frame, bg="#e0e0e0", width=600, height=500)
+        self.canvas = tk.Canvas(left_frame, bg="#e0e0e0", width=700, height=600)
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.canvas.create_text(300, 250, text="Avvia la webcam per iniziare", fill="gray", font=("Arial", 14))
+        self.canvas.create_text(350, 300, text="Premi 'Prossima Immagine' per iniziare", fill="gray", font=("Arial", 14))
         
         # Pannello destro (controlli)
         right_frame = ttk.Frame(main_paned)
@@ -101,39 +167,21 @@ class RiconoscitoreDifetti:
         control_frame = ttk.LabelFrame(right_frame, text="Controlli")
         control_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Controlli webcam
-        webcam_frame = ttk.LabelFrame(control_frame, text="Controlli Webcam")
-        webcam_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        self.start_button = ttk.Button(webcam_frame, text="Avvia Webcam", command=self.start_webcam)
-        self.start_button.pack(fill=tk.X, padx=10, pady=5)
-        
-        self.stop_button = ttk.Button(webcam_frame, text="Ferma Webcam", command=self.stop_webcam, state=tk.DISABLED)
-        self.stop_button.pack(fill=tk.X, padx=10, pady=5)
-        
-        self.capture_button = ttk.Button(webcam_frame, text="Scatta e Analizza", command=self.capture_and_analyze, state=tk.DISABLED)
-        self.capture_button.pack(fill=tk.X, padx=10, pady=5)
-        
-        # Checkbox per analisi automatica
-        self.auto_analyze_var = tk.BooleanVar(value=False)
-        self.auto_analyze_check = ttk.Checkbutton(
-            webcam_frame, 
-            text="Analisi automatica continua", 
-            variable=self.auto_analyze_var,
-            command=self.toggle_auto_analyze
+        # Pulsante per passare all'immagine successiva
+        self.next_button = ttk.Button(
+            control_frame, 
+            text="Prossima Immagine", 
+            command=self.next_image
         )
-        self.auto_analyze_check.pack(fill=tk.X, padx=10, pady=5)
+        self.next_button.pack(fill=tk.X, padx=10, pady=10)
         
-        # Frame per la frequenza di analisi
-        freq_frame = ttk.Frame(webcam_frame)
-        freq_frame.pack(fill=tk.X, padx=10, pady=5)
+        # Etichetta per mostrare il nome dell'immagine corrente
+        self.image_label = ttk.Label(control_frame, text="Nessuna immagine selezionata")
+        self.image_label.pack(padx=10, pady=5)
         
-        ttk.Label(freq_frame, text="Intervallo analisi (sec): ").pack(side=tk.LEFT)
-        
-        self.analysis_freq_var = tk.DoubleVar(value=1.0)
-        freq_spinbox = ttk.Spinbox(freq_frame, from_=0.1, to=10.0, increment=0.1, 
-                                   textvariable=self.analysis_freq_var, width=5)
-        freq_spinbox.pack(side=tk.LEFT, padx=5)
+        # Etichetta per mostrare il progresso
+        self.progress_label = ttk.Label(control_frame, text="0/0")
+        self.progress_label.pack(padx=10, pady=5)
         
         # Soglia per la sensibilità colore SCURO
         dark_frame = ttk.LabelFrame(control_frame, text="Sensibilità Zone Scure")
@@ -141,8 +189,8 @@ class RiconoscitoreDifetti:
         
         self.dark_var = tk.IntVar(value=self.soglia_colore_scuro)
         dark_scale = ttk.Scale(dark_frame, from_=0, to=255, 
-                              variable=self.dark_var, 
-                              command=self.update_dark_threshold)
+                             variable=self.dark_var, 
+                             command=self.update_dark_threshold)
         dark_scale.pack(fill=tk.X, padx=5, pady=5)
         
         self.dark_label = ttk.Label(dark_frame, text=f"Soglia zone scure: {self.soglia_colore_scuro}")
@@ -154,12 +202,30 @@ class RiconoscitoreDifetti:
         
         self.bright_var = tk.IntVar(value=self.soglia_colore_chiaro)
         bright_scale = ttk.Scale(bright_frame, from_=100, to=255, 
-                                variable=self.bright_var, 
-                                command=self.update_bright_threshold)
+                               variable=self.bright_var, 
+                               command=self.update_bright_threshold)
         bright_scale.pack(fill=tk.X, padx=5, pady=5)
         
         self.bright_label = ttk.Label(bright_frame, text=f"Soglia zone chiare: {self.soglia_colore_chiaro}")
         self.bright_label.pack(pady=5)
+        
+        # Soglia per il rilevamento dei bordi (Canny)
+        edge_frame = ttk.LabelFrame(control_frame, text="Parametri Rilevamento Bordi")
+        edge_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        ttk.Label(edge_frame, text="Soglia Minima:").pack(anchor=tk.W, padx=10, pady=2)
+        self.canny_min_var = tk.IntVar(value=self.soglia_canny_min)
+        canny_min_scale = ttk.Scale(edge_frame, from_=0, to=255, 
+                                  variable=self.canny_min_var, 
+                                  command=self.update_canny_min)
+        canny_min_scale.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(edge_frame, text="Soglia Massima:").pack(anchor=tk.W, padx=10, pady=2)
+        self.canny_max_var = tk.IntVar(value=self.soglia_canny_max)
+        canny_max_scale = ttk.Scale(edge_frame, from_=0, to=255, 
+                                  variable=self.canny_max_var, 
+                                  command=self.update_canny_max)
+        canny_max_scale.pack(fill=tk.X, padx=10, pady=5)
         
         # Soglia per il rilevamento dei difetti complessivi
         threshold_frame = ttk.LabelFrame(control_frame, text="Soglia Difetti Totali")
@@ -167,12 +233,45 @@ class RiconoscitoreDifetti:
         
         self.threshold_var = tk.DoubleVar(value=self.soglia_difetti)
         threshold_scale = ttk.Scale(threshold_frame, from_=0.1, to=30.0, 
-                                   variable=self.threshold_var, 
-                                   command=self.update_threshold)
+                                  variable=self.threshold_var, 
+                                  command=self.update_threshold)
         threshold_scale.pack(fill=tk.X, padx=5, pady=5)
         
         self.threshold_label = ttk.Label(threshold_frame, text=f"Soglia: {self.soglia_difetti:.1f}%")
         self.threshold_label.pack(pady=5)
+        
+        # Stato dei LED
+        led_frame = ttk.LabelFrame(control_frame, text="Stato LED")
+        led_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        led_status_frame = ttk.Frame(led_frame)
+        led_status_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Indicatore LED Verde (OK)
+        self.led_green_indicator = tk.Canvas(led_status_frame, width=20, height=20, bg="lightgray")
+        self.led_green_indicator.pack(side=tk.LEFT, padx=5)
+        self.led_green_indicator.create_oval(2, 2, 18, 18, fill="lightgray", outline="black", tags="green_led")
+        ttk.Label(led_status_frame, text="LED Verde (OK)").pack(side=tk.LEFT, padx=5)
+        
+        # Indicatore LED Rosso (Difetti)
+        led_status_frame2 = ttk.Frame(led_frame)
+        led_status_frame2.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.led_red_indicator = tk.Canvas(led_status_frame2, width=20, height=20, bg="lightgray")
+        self.led_red_indicator.pack(side=tk.LEFT, padx=5)
+        self.led_red_indicator.create_oval(2, 2, 18, 18, fill="lightgray", outline="black", tags="red_led")
+        ttk.Label(led_status_frame2, text="LED Rosso (Difetti)").pack(side=tk.LEFT, padx=5)
+        
+        # Pulsanti per il controllo manuale dei LED
+        led_buttons_frame = ttk.Frame(led_frame)
+        led_buttons_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(led_buttons_frame, text="Test LED Verde", 
+                 command=lambda: self.test_led(LED_VERDE)).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Button(led_buttons_frame, text="Test LED Rosso", 
+                 command=lambda: self.test_led(LED_ROSSO)).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ttk.Button(led_buttons_frame, text="Spegni LED", 
+                 command=self.turn_off_leds).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
         # Visualizzazioni disponibili
         views_frame = ttk.LabelFrame(control_frame, text="Visualizzazioni")
@@ -184,35 +283,135 @@ class RiconoscitoreDifetti:
         self.view_options.bind("<<ComboboxSelected>>", self.change_view)
         
         # Risultati analisi
-        results_frame = ttk.LabelFrame(control_frame, text="Risultati Analisi")
-        results_frame.pack(fill=tk.X, padx=10, pady=10)
+        results_frame = ttk.LabelFrame(right_frame, text="Risultati Analisi")
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.dark_area_var = tk.StringVar(value="Area scura: N/A")
-        dark_area_label = ttk.Label(results_frame, textvariable=self.dark_area_var)
-        dark_area_label.pack(anchor=tk.W, padx=5, pady=2)
+        # Treeview per mostrare i risultati delle diverse aree
+        self.results_tree = ttk.Treeview(results_frame, columns=("Area", "Stato", "Difetti", "Percentuale"))
+        self.results_tree.heading("#0", text="")
+        self.results_tree.heading("Area", text="Area")
+        self.results_tree.heading("Stato", text="Stato")
+        self.results_tree.heading("Difetti", text="Difetti")
+        self.results_tree.heading("Percentuale", text="% Difetti")
         
-        self.bright_area_var = tk.StringVar(value="Area chiara: N/A")
-        bright_area_label = ttk.Label(results_frame, textvariable=self.bright_area_var)
-        bright_area_label.pack(anchor=tk.W, padx=5, pady=2)
+        self.results_tree.column("#0", width=0, stretch=False)
+        self.results_tree.column("Area", width=100)
+        self.results_tree.column("Stato", width=70)
+        self.results_tree.column("Difetti", width=80)
+        self.results_tree.column("Percentuale", width=80)
         
-        self.total_area_var = tk.StringVar(value="Area difettata totale: N/A")
-        total_area_label = ttk.Label(results_frame, textvariable=self.total_area_var)
-        total_area_label.pack(anchor=tk.W, padx=5, pady=2)
+        self.results_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.status_var = tk.StringVar(value="Stato: N/A")
-        self.status_label = ttk.Label(results_frame, textvariable=self.status_var)
-        self.status_label.pack(anchor=tk.W, padx=5, pady=2)
+        # Inserisci le aree nel TreeView
+        self.results_tree.insert("", "end", iid="base", values=("Base", "N/A", "", ""))
+        self.results_tree.insert("", "end", iid="lato_superiore", values=("Lato Superiore", "N/A", "", ""))
+        self.results_tree.insert("", "end", iid="lato_destro", values=("Lato Destro", "N/A", "", ""))
+        self.results_tree.insert("", "end", iid="lato_inferiore", values=("Lato Inferiore", "N/A", "", ""))
+        self.results_tree.insert("", "end", iid="lato_sinistro", values=("Lato Sinistro", "N/A", "", ""))
         
         # Log delle operazioni
         log_frame = ttk.LabelFrame(right_frame, text="Log")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.log_text = tk.Text(log_frame, wrap=tk.WORD, height=10, width=30)
+        self.log_text = tk.Text(log_frame, wrap=tk.WORD, height=8, width=30)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         log_scrollbar = ttk.Scrollbar(self.log_text, orient=tk.VERTICAL, command=self.log_text.yview)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=log_scrollbar.set)
+    
+    def next_image(self):
+        """Passa all'immagine successiva nella cartella e la analizza."""
+        if not self.image_files:
+            messagebox.showinfo("Info", "Nessuna immagine disponibile nella cartella.")
+            return
+        
+        self.current_image_index = (self.current_image_index + 1) % len(self.image_files)
+        image_file = self.image_files[self.current_image_index]
+        self.image_path = os.path.join(self.image_folder, image_file)
+        
+        try:
+            self.original_image = cv2.imread(self.image_path)
+            
+            if self.original_image is None:
+                raise ValueError(f"Impossibile leggere l'immagine {image_file}")
+            
+            # Aggiorna le etichette
+            self.image_label.config(text=f"Immagine: {image_file}")
+            self.progress_label.config(text=f"{self.current_image_index + 1}/{len(self.image_files)}")
+            
+            # Visualizza l'immagine caricata
+            self.display_image(self.original_image)
+            
+            # Processa l'immagine
+            self.process_image()
+            
+            self.log(f"Analisi immagine: {image_file}")
+            
+            # Se questa è l'ultima immagine, verifica lo stato complessivo
+            if self.current_image_index == len(self.image_files) - 1:
+                self.check_all_components()
+            
+        except Exception as e:
+            self.log(f"Errore nel caricamento dell'immagine {image_file}: {str(e)}")
+    
+    def check_all_components(self):
+        """Verifica se tutti i componenti sono OK e attiva i LED appropriati."""
+        # Controlla se ci sono stati difetti in tutte le immagini analizzate
+        if self.all_components_ok:
+            self.log("RISULTATO FINALE: Tutti i componenti della scatola sono OK")
+            self.turn_on_led(LED_VERDE)
+            self.update_led_indicators(LED_VERDE)
+        else:
+            self.log("RISULTATO FINALE: Rilevati difetti in alcuni componenti della scatola")
+            self.turn_on_led(LED_ROSSO)
+            self.update_led_indicators(LED_ROSSO)
+    
+    def turn_on_led(self, led_pin):
+        """Accende il LED specificato e spegne l'altro."""
+        # Spegni entrambi i LED
+        GPIO.output(LED_VERDE, GPIO.LOW)
+        GPIO.output(LED_ROSSO, GPIO.LOW)
+        
+        # Accendi il LED specifico
+        GPIO.output(led_pin, GPIO.HIGH)
+    
+    def turn_off_leds(self):
+        """Spegne entrambi i LED."""
+        GPIO.output(LED_VERDE, GPIO.LOW)
+        GPIO.output(LED_ROSSO, GPIO.LOW)
+        
+        # Aggiorna indicatori visivi
+        self.led_green_indicator.itemconfig("green_led", fill="lightgray")
+        self.led_red_indicator.itemconfig("red_led", fill="lightgray")
+        
+        self.log("LED spenti")
+    
+    def test_led(self, led_pin):
+        """Testa il LED specifico accendendolo per 2 secondi."""
+        # Accendi il LED specificato
+        self.turn_on_led(led_pin)
+        
+        # Aggiorna indicatori visivi
+        self.update_led_indicators(led_pin)
+        
+        # Messaggio di log
+        led_name = "verde" if led_pin == LED_VERDE else "rosso"
+        self.log(f"Test LED {led_name} attivo")
+        
+        # Programma lo spegnimento dopo 2 secondi
+        self.root.after(2000, self.turn_off_leds)
+    
+    def update_led_indicators(self, active_led):
+        """Aggiorna gli indicatori visivi dei LED nell'interfaccia."""
+        # Aggiorna indicatore LED Verde
+        if active_led == LED_VERDE:
+            self.led_green_indicator.itemconfig("green_led", fill="green")
+            self.led_red_indicator.itemconfig("red_led", fill="lightgray")
+        # Aggiorna indicatore LED Rosso
+        elif active_led == LED_ROSSO:
+            self.led_green_indicator.itemconfig("green_led", fill="lightgray")
+            self.led_red_indicator.itemconfig("red_led", fill="red")
     
     def update_threshold(self, event=None):
         """Aggiorna l'etichetta della soglia quando viene modificata."""
@@ -229,355 +428,227 @@ class RiconoscitoreDifetti:
         self.soglia_colore_chiaro = self.bright_var.get()
         self.bright_label.config(text=f"Soglia zone chiare: {self.soglia_colore_chiaro}")
     
-    def start_webcam(self):
-        """Avvia la cattura dalla webcam."""
-        try:
-            # Inizializza la webcam
-            self.capture = cv2.VideoCapture(self.camera_index)
-            
-            if not self.capture.isOpened():
-                messagebox.showerror("Errore", "Impossibile accedere alla webcam.")
-                self.log("Errore: Impossibile accedere alla webcam.")
-                return
-            
-            # Imposta flag di cattura
-            self.is_capturing = True
-            
-            # Attiva/disattiva i pulsanti
-            self.start_button.config(state=tk.DISABLED)
-            self.stop_button.config(state=tk.NORMAL)
-            self.capture_button.config(state=tk.NORMAL)
-            
-            # Avvia il thread di cattura
-            self.capture_thread = threading.Thread(target=self.update_webcam_feed)
-            self.capture_thread.daemon = True
-            self.capture_thread.start()
-            
-            self.log("Webcam avviata.")
-            
-        except Exception as e:
-            messagebox.showerror("Errore", f"Errore nell'avvio della webcam: {str(e)}")
-            self.log(f"Errore nell'avvio della webcam: {str(e)}")
+    def update_canny_min(self, event=None):
+        """Aggiorna la soglia minima per Canny."""
+        self.soglia_canny_min = self.canny_min_var.get()
     
-    def update_webcam_feed(self):
-        """Aggiorna il feed della webcam in modo continuo."""
-        last_analysis_time = 0
-        
-        while self.is_capturing:
-            try:
-                # Leggi un frame dalla webcam
-                ret, frame = self.capture.read()
-                
-                if not ret:
-                    self.log("Errore nella lettura del frame dalla webcam.")
-                    break
-                
-                # Specchia orizzontalmente il frame (più naturale per l'utente)
-                frame = cv2.flip(frame, 1)
-                
-                # Visualizza il frame live
-                self.display_webcam_frame(frame)
-                
-                # Analisi automatica se abilitata
-                current_time = time.time()
-                if (self.auto_analyze_var.get() and 
-                    current_time - last_analysis_time > self.analysis_freq_var.get()):
-                    # Salva l'ultimo frame per elaborarlo
-                    self.original_image = frame.copy()
-                    # Elabora l'immagine in un thread separato per non bloccare l'UI
-                    analysis_thread = threading.Thread(target=self.process_image)
-                    analysis_thread.daemon = True
-                    analysis_thread.start()
-                    last_analysis_time = current_time
-                
-                # Breve pausa per non sovraccaricare la CPU
-                time.sleep(0.03)
-                
-            except Exception as e:
-                self.log(f"Errore nell'aggiornamento del feed webcam: {str(e)}")
-                break
-        
-        # Rilascia la webcam quando esco dal ciclo
-        if self.capture is not None and self.is_capturing == False:
-            self.capture.release()
+    def update_canny_max(self, event=None):
+        """Aggiorna la soglia massima per Canny."""
+        self.soglia_canny_max = self.canny_max_var.get()
     
-    def display_webcam_frame(self, frame):
-        """Visualizza un frame dalla webcam nel canvas."""
-        if frame is None:
+    def save_current_image(self):
+        """Salva l'immagine correntemente visualizzata."""
+        if self.current_view is None or self.current_view not in self.processed_images:
+            messagebox.showwarning("Attenzione", "Nessuna immagine disponibile da salvare.")
             return
         
-        try:
-            # Ottieni le dimensioni del canvas
-            canvas_width = self.canvas.winfo_width()
-            canvas_height = self.canvas.winfo_height()
-            
-            # Se il canvas non è ancora stato renderizzato, usa dimensioni di backup
-            if canvas_width < 50 or canvas_height < 50:
-                canvas_width = 600
-                canvas_height = 500
-            
-            # Dimensioni originali del frame
-            height, width = frame.shape[:2]
-            
-            # Calcola il fattore di scala per adattare il frame al canvas
-            scale = min(canvas_width/width, canvas_height/height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            
-            # Ridimensiona il frame
-            resized = cv2.resize(frame, (new_width, new_height))
-            
-            # Converti da BGR a RGB per PIL
-            display_image = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            
-            # Converti in formato PIL
-            pil_image = Image.fromarray(display_image)
-            
-            # Converti in formato Tkinter
-            tk_image = ImageTk.PhotoImage(image=pil_image)
-            
-            # Salva un riferimento all'immagine (per evitare il garbage collection)
-            self.tk_image = tk_image
-            
-            # Mostra l'immagine nel canvas
-            self.canvas.delete("all")
-            self.canvas.create_image(canvas_width//2, canvas_height//2, image=tk_image)
-            
-        except Exception as e:
-            self.log(f"Errore nella visualizzazione del frame: {str(e)}")
-    
-    def stop_webcam(self):
-        """Ferma la cattura dalla webcam."""
-        self.is_capturing = False
-        
-        # Attendi che il thread di cattura termini
-        if self.capture_thread and self.capture_thread.is_alive():
-            self.capture_thread.join(1.0)  # Attendi max 1 secondo
-        
-        # Rilascia la webcam
-        if self.capture is not None:
-            self.capture.release()
-            self.capture = None
-        
-        # Ripristina l'interfaccia
-        self.start_button.config(state=tk.NORMAL)
-        self.stop_button.config(state=tk.DISABLED)
-        self.capture_button.config(state=tk.DISABLED)
-        
-        # Cancella il canvas
-        self.canvas.delete("all")
-        self.canvas.create_text(300, 250, text="Webcam fermata", fill="gray", font=("Arial", 14))
-        
-        self.log("Webcam fermata.")
-    
-    def capture_and_analyze(self):
-        """Cattura un frame dalla webcam e lo analizza."""
-        if not self.is_capturing or self.capture is None:
-            messagebox.showwarning("Attenzione", "La webcam non è attiva.")
-            return
+        file_path = f"risultato_{os.path.basename(self.image_path)}"
         
         try:
-            # Leggi un frame dalla webcam
-            ret, frame = self.capture.read()
+            # Crea una cartella per i risultati se non esiste
+            result_folder = "risultati"
+            if not os.path.exists(result_folder):
+                os.makedirs(result_folder)
             
-            if not ret:
-                messagebox.showerror("Errore", "Impossibile catturare il frame dalla webcam.")
-                return
-                
-            # Specchia orizzontalmente il frame
-            frame = cv2.flip(frame, 1)
+            # Percorso completo per il salvataggio
+            save_path = os.path.join(result_folder, file_path)
             
-            # Salva il frame come immagine originale
-            self.original_image = frame.copy()
-            
-            # Processa l'immagine
-            self.process_image()
-            
-            self.log("Immagine catturata e analizzata.")
+            # Salva l'immagine corrente
+            cv2.imwrite(save_path, self.processed_images[self.current_view])
+            self.log(f"Immagine salvata: {save_path}")
             
         except Exception as e:
-            self.log(f"Errore durante la cattura: {str(e)}")
-            messagebox.showerror("Errore", f"Si è verificato un errore: {str(e)}")
-    
-    def toggle_auto_analyze(self):
-        """Attiva/disattiva l'analisi automatica."""
-        auto_analyze = self.auto_analyze_var.get()
-        if auto_analyze:
-            self.log(f"Analisi automatica attivata con intervallo di {self.analysis_freq_var.get():.1f} secondi.")
-        else:
-            self.log("Analisi automatica disattivata.")
-    
+            messagebox.showerror("Errore", f"Impossibile salvare l'immagine: {str(e)}")
+            self.log(f"Errore nel salvataggio dell'immagine: {str(e)}")
+            
     def process_image(self):
-        """Elabora l'immagine corrente."""
+        """Elabora l'immagine corrente con segmentazione avanzata."""
         if self.original_image is None:
-            messagebox.showwarning("Attenzione", "Nessuna immagine disponibile per l'analisi.")
+            self.log("Attenzione: Nessuna immagine disponibile per l'analisi.")
             return
         
         try:
-            # Converti in scala di grigi
-            gray_image = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
+            # Reset dei risultati dell'analisi
+            for area in self.area_results:
+                self.area_results[area] = {"ok": True, "difetti": [], "percentuale": 0.0}
             
             # Reset delle immagini elaborate
             self.processed_images = {}
             self.processed_images["Originale"] = self.original_image.copy()
             
-            # Applica una colormap JET (default)
+            # Segmenta l'immagine in 5 aree (base + 4 lati)
+            segmented_img, regions = self.segment_image(self.original_image)
+            self.processed_images["Segmentazione"] = segmented_img
+            
+            # Converti l'immagine originale in scala di grigi
+            gray_image = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
+            
+            # Applica una colormap JET (per visualizzazione)
             colormap = cv2.COLORMAP_JET
             colored_image = cv2.applyColorMap(gray_image, colormap)
             self.processed_images["Colormap JET"] = colored_image
             
-            # Rileva zone scure
-            dark_image, dark_mask, dark_percent = self.detect_dark_regions(gray_image, self.soglia_colore_scuro)
-            self.processed_images["Zone Scure"] = dark_image
+            # Analisi per ogni regione
+            self.analyze_region("base", regions["base"], "base")
+            self.analyze_region("lato_superiore", regions["lato_superiore"], "lato")
+            self.analyze_region("lato_destro", regions["lato_destro"], "lato")
+            self.analyze_region("lato_inferiore", regions["lato_inferiore"], "lato")
+            self.analyze_region("lato_sinistro", regions["lato_sinistro"], "lato")
             
-            # Rileva zone chiare/rosse
-            bright_image, bright_mask, bright_percent = self.detect_bright_regions(gray_image, self.soglia_colore_chiaro)
-            self.processed_images["Zone Chiare"] = bright_image
+            # Crea un'immagine con i risultati combinati
+            combined_result = self.original_image.copy()
             
-            # Crea un'immagine combinata che mostra entrambi i tipi di difetti
-            combined_image, combined_mask, total_percent = self.combine_defects(
-                gray_image, dark_mask, bright_mask, dark_percent, bright_percent)
-            self.processed_images["Difetti Combinati"] = combined_image
+            # Disegna rettangoli colorati in base allo stato di ogni regione
+            for area, data in self.area_results.items():
+                region_data = regions[area]
+                x1, y1, x2, y2 = region_data["coords"]
+                
+                # Colore verde per regioni OK, rosso per difettate
+                color = (0, 255, 0) if data["ok"] else (0, 0, 255)
+                cv2.rectangle(combined_result, (x1, y1), (x2, y2), color, 2)
+                
+                # Aggiungi testo con percentuale difetti
+                text = f"{area.replace('_', ' ').title()}: {data['percentuale']:.1f}%"
+                cv2.putText(combined_result, text, (x1 + 5, y1 + 20), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
-            # Aggiungi le maschere alle visualizzazioni
-            self.processed_images["Maschera Zone Scure"] = cv2.cvtColor(dark_mask, cv2.COLOR_GRAY2BGR)
-            self.processed_images["Maschera Zone Chiare"] = cv2.cvtColor(bright_mask, cv2.COLOR_GRAY2BGR)
-            self.processed_images["Maschera Combinata"] = cv2.cvtColor(combined_mask, cv2.COLOR_GRAY2BGR)
+            self.processed_images["Risultato Analisi"] = combined_result
             
-            # Determina se il pezzo è difettato (basato sull'area difettata totale)
-            is_defective = total_percent > self.soglia_difetti
+            # Crea un'immagine combinata di tutti i difetti
+            total_defect_mask = np.zeros_like(gray_image)
+            for area, data in self.area_results.items():
+                if "mask" in data and data["mask"] is not None:
+                    # Estrai la regione dalla maschera totale
+                    x1, y1, x2, y2 = regions[area]["coords"]
+                    region_mask = np.zeros_like(gray_image)
+                    region_mask[y1:y2, x1:x2] = data["mask"]
+                    total_defect_mask = cv2.bitwise_or(total_defect_mask, region_mask)
+            
+            # Crea visualizzazione maschere
+            defect_visualization = self.original_image.copy()
+            defect_visualization[total_defect_mask > 0] = [0, 0, 255]  # Colora i difetti in rosso
+            self.processed_images["Maschera Difetti"] = defect_visualization
+            
+            # Calcola percentuale totale di difetti
+            total_pixels = gray_image.shape[0] * gray_image.shape[1]
+            defect_pixels = cv2.countNonZero(total_defect_mask)
+            total_defect_percent = (defect_pixels / total_pixels) * 100 if total_pixels > 0 else 0
+            
+            # Determina lo stato complessivo del prodotto
+            is_defective = any(not data["ok"] for data in self.area_results.values())
             status_text = "DIFETTATO" if is_defective else "OK"
             
-            # Aggiorna i risultati dell'analisi
-            # Usiamo tk.CallAfter per aggiornare l'UI in modo thread-safe
-            self.root.after(0, lambda: self.dark_area_var.set(f"Area scura: {dark_percent:.2f}%"))
-            self.root.after(0, lambda: self.bright_area_var.set(f"Area chiara: {bright_percent:.2f}%"))
-            self.root.after(0, lambda: self.total_area_var.set(f"Area difettata totale: {total_percent:.2f}%"))
-            self.root.after(0, lambda: self.status_var.set(f"Stato: {status_text}"))
-            
-            # Imposta lo stato con colore
+            # Se ci sono difetti, imposta la flag per l'intero controllo della scatola su False
             if is_defective:
-                self.root.after(0, lambda: self.status_label.config(foreground="red"))
-            else:
-                self.root.after(0, lambda: self.status_label.config(foreground="green"))
+                self.all_components_ok = False
+            
+            # Aggiorna il TreeView con i risultati per ogni area
+            for area, data in self.area_results.items():
+                status = "OK" if data["ok"] else "DIFETTATO"
+                difetti_str = ", ".join(data["difetti"]) if data["difetti"] else "Nessuno"
+                percentuale_str = f"{data['percentuale']:.2f}%"
+                
+                self.results_tree.item(area, values=(area.replace("_", " ").title(), status, difetti_str, percentuale_str))
             
             # Aggiorna il combobox con le viste disponibili
-            self.root.after(0, lambda: self.view_options.config(values=list(self.processed_images.keys())))
+            self.view_options.config(values=list(self.processed_images.keys()))
             
-            # Passa alla vista "Difetti Combinati"
-            self.root.after(0, lambda: self.view_var.set("Difetti Combinati"))
-            self.root.after(0, lambda: self.display_image(self.processed_images["Difetti Combinati"]))
-            self.current_view = "Difetti Combinati"
+            # Passa alla vista "Risultato Analisi"
+            self.view_var.set("Risultato Analisi")
+            self.display_image(self.processed_images["Risultato Analisi"])
+            self.current_view = "Risultato Analisi"
             
-            # Log dei risultati (utilizzando after per essere thread-safe)
-            self.root.after(0, lambda: self.log(
-                f"Analisi completata. Area scura: {dark_percent:.2f}%, Area chiara: {bright_percent:.2f}%, "
-                f"Totale: {total_percent:.2f}%. Stato: {status_text}"))
-            
+            # Log dei risultati
+            self.log(f"Analisi completata. Stato dell'immagine: {status_text}. {total_defect_percent:.2f}% area totale difettata.")
+        
         except Exception as e:
-            self.log(f"Errore durante l'elaborazione: {str(e)}")
-            messagebox.showerror("Errore", f"Si è verificato un errore: {str(e)}")
-    
-    def detect_dark_regions(self, gray_image, threshold=50):
-        """Rileva le regioni scure e calcola la percentuale."""
-        # Applica soglia per individuare le aree scure
-        _, threshold_image = cv2.threshold(gray_image, threshold, 255, cv2.THRESH_BINARY_INV)
+            self.log(f"Errore durante l'elaborazione dell'immagine: {str(e)}")
+            messagebox.showerror("Errore", f"Si è verificato un errore durante l'elaborazione: {str(e)}")
+    def segment_image(self, image):
+        """Segmenta l'immagine in base (centro) e 4 lati (superiore, inferiore, sinistro, destro)."""
+        height, width = image.shape[:2]
         
-        # Operazioni morfologiche per migliorare il rilevamento
-        kernel = np.ones((5, 5), np.uint8)
-        processed_mask = cv2.morphologyEx(threshold_image, cv2.MORPH_OPEN, kernel)
+        # Calcola la dimensione del quadrato centrale (base)
+        base_size = min(width, height) * self.base_roi_percent / 100
         
-        # Calcola la percentuale di area scura
-        total_pixels = processed_mask.shape[0] * processed_mask.shape[1]
-        dark_pixels = cv2.countNonZero(processed_mask)
-        dark_percent = (dark_pixels / total_pixels) * 100
+        # Calcola le coordinate del quadrato centrale
+        center_x, center_y = width // 2, height // 2
+        half_size = base_size // 2
         
-        # Crea un'immagine a colori per evidenziare le aree scure
-        contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        result_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
-        cv2.drawContours(result_image, contours, -1, (0, 0, 255), 2)  # Contorni rossi per zone scure
+        # Definisci le coordinate delle regioni (x1, y1, x2, y2)
+        # Base (centro)
+        base_x1 = int(center_x - half_size)
+        base_y1 = int(center_y - half_size)
+        base_x2 = int(center_x + half_size)
+        base_y2 = int(center_y + half_size)
         
-        # Aggiungi testo con la percentuale e parametri
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(result_image, f"Area scura: {dark_percent:.2f}%", (10, 30), 
-                   font, 0.7, (0, 0, 255), 2)
-        cv2.putText(result_image, f"Soglia scuro: {threshold}", (10, 60), 
-                   font, 0.7, (255, 255, 0), 2)
+        # Lato superiore
+        top_x1 = base_x1
+        top_y1 = 0
+        top_x2 = base_x2
+        top_y2 = base_y1
         
-        return result_image, processed_mask, dark_percent
-    
-    def detect_bright_regions(self, gray_image, threshold=200):
-        """Rileva le regioni chiare e calcola la percentuale."""
-        # Applica soglia per individuare le aree chiare
-        _, threshold_image = cv2.threshold(gray_image, threshold, 255, cv2.THRESH_BINARY)
+        # Lato destro
+        right_x1 = base_x2
+        right_y1 = base_y1
+        right_x2 = width
+        right_y2 = base_y2
         
-        # Operazioni morfologiche per migliorare il rilevamento
-        kernel = np.ones((5, 5), np.uint8)
-        processed_mask = cv2.morphologyEx(threshold_image, cv2.MORPH_OPEN, kernel)
+        # Lato inferiore
+        bottom_x1 = base_x1
+        bottom_y1 = base_y2
+        bottom_x2 = base_x2
+        bottom_y2 = height
         
-        # Calcola la percentuale di area chiara
-        total_pixels = processed_mask.shape[0] * processed_mask.shape[1]
-        bright_pixels = cv2.countNonZero(processed_mask)
-        bright_percent = (bright_pixels / total_pixels) * 100
+        # Lato sinistro
+        left_x1 = 0
+        left_y1 = base_y1
+        left_x2 = base_x1
+        left_y2 = base_y2
         
-        # Crea un'immagine a colori per evidenziare le aree chiare
-        contours, _ = cv2.findContours(processed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        result_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
-        cv2.drawContours(result_image, contours, -1, (0, 255, 0), 2)  # Contorni verdi per zone chiare
+        # Crea una copia dell'immagine per visualizzare la segmentazione
+        segmented_img = image.copy()
         
-        # Aggiungi testo con la percentuale e parametri
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(result_image, f"Area chiara: {bright_percent:.2f}%", (10, 30), 
-                   font, 0.7, (0, 255, 0), 2)
-        cv2.putText(result_image, f"Soglia chiaro: {threshold}", (10, 60), 
-                   font, 0.7, (255, 255, 0), 2)
+        # Disegna rettangoli per visualizzare le regioni
+        # Base (centro) - giallo
+        cv2.rectangle(segmented_img, (base_x1, base_y1), (base_x2, base_y2), (0, 255, 255), 2)
+        cv2.putText(segmented_img, "Base", (base_x1 + 10, base_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
         
-        return result_image, processed_mask, bright_percent
-    
-    def combine_defects(self, gray_image, dark_mask, bright_mask, dark_percent, bright_percent):
-        """Combina le maschere dei difetti scuri e chiari."""
-        # Combina le maschere con OR
-        combined_mask = cv2.bitwise_or(dark_mask, bright_mask)
+        # Lato superiore - blu
+        cv2.rectangle(segmented_img, (top_x1, top_y1), (top_x2, top_y2), (255, 0, 0), 2)
+        cv2.putText(segmented_img, "Lato Sup", (top_x1 + 10, top_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         
-        # Ricalcola la percentuale totale (poiché potrebbero esserci sovrapposizioni)
-        total_pixels = combined_mask.shape[0] * combined_mask.shape[1]
-        defect_pixels = cv2.countNonZero(combined_mask)
-        total_percent = (defect_pixels / total_pixels) * 100
+        # Lato destro - verde
+        cv2.rectangle(segmented_img, (right_x1, right_y1), (right_x2, right_y2), (0, 255, 0), 2)
+        cv2.putText(segmented_img, "Lato Dx", (right_x1 + 10, right_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
-        # Crea un'immagine a colori per evidenziare tutte le aree difettate
-        result_image = cv2.cvtColor(gray_image, cv2.COLOR_GRAY2BGR)
+        # Lato inferiore - rosso
+        cv2.rectangle(segmented_img, (bottom_x1, bottom_y1), (bottom_x2, bottom_y2), (0, 0, 255), 2)
+        cv2.putText(segmented_img, "Lato Inf", (bottom_x1 + 10, bottom_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         
-        # Disegna contorni per zone scure (rosso)
-        contours_dark, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(result_image, contours_dark, -1, (0, 0, 255), 2)
+        # Lato sinistro - ciano
+        cv2.rectangle(segmented_img, (left_x1, left_y1), (left_x2, left_y2), (255, 255, 0), 2)
+        cv2.putText(segmented_img, "Lato Sx", (left_x1 + 10, left_y1 + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
         
-        # Disegna contorni per zone chiare (verde)
-        contours_bright, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(result_image, contours_bright, -1, (0, 255, 0), 2)
+        # Estrai le regioni dall'immagine originale
+        base_region = image[base_y1:base_y2, base_x1:base_x2].copy()
+        top_region = image[top_y1:top_y2, top_x1:top_x2].copy() if top_y2 > top_y1 else None
+        right_region = image[right_y1:right_y2, right_x1:right_x2].copy() if right_x2 > right_x1 else None
+        bottom_region = image[bottom_y1:bottom_y2, bottom_x1:bottom_x2].copy() if bottom_y2 > bottom_y1 else None
+        left_region = image[left_y1:left_y2, left_x1:left_x2].copy() if left_x2 > left_x1 else None
         
-        # Crea un overlay colorato per visualizzare meglio le aree difettate
-        overlay = result_image.copy()
-        # Colora aree scure in blu semi-trasparente
-        overlay[dark_mask > 0] = [255, 0, 0]  # BGR: blu
-        # Colora aree chiare in verde semi-trasparente
-        overlay[bright_mask > 0] = [0, 255, 0]  # BGR: verde
+        # Coordinate delle regioni per riferimento futuro
+        regions = {
+            "base": {"img": base_region, "coords": (base_x1, base_y1, base_x2, base_y2)},
+            "lato_superiore": {"img": top_region, "coords": (top_x1, top_y1, top_x2, top_y2)},
+            "lato_destro": {"img": right_region, "coords": (right_x1, right_y1, right_x2, right_y2)},
+            "lato_inferiore": {"img": bottom_region, "coords": (bottom_x1, bottom_y1, bottom_x2, bottom_y2)},
+            "lato_sinistro": {"img": left_region, "coords": (left_x1, left_y1, left_x2, left_y2)}
+        }
         
-        # Combina con l'immagine originale
-        alpha = 0.3  # Trasparenza dell'overlay
-        cv2.addWeighted(overlay, alpha, result_image, 1 - alpha, 0, result_image)
-        
-        # Aggiungi testo con percentuali e parametri
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(result_image, f"Area scura: {dark_percent:.2f}%", (10, 30), 
-                   font, 0.7, (0, 0, 255), 2)
-        cv2.putText(result_image, f"Area chiara: {bright_percent:.2f}%", (10, 60), 
-                   font, 0.7, (0, 255, 0), 2)
-        cv2.putText(result_image, f"Area totale difettata: {total_percent:.2f}%", (10, 90), 
-                   font, 0.7, (255, 255, 255), 2)
-        
-        status_text = "DIFETTATO" if total_percent > self.soglia_difetti else "OK"
-        status_color = (0, 0, 255) if total_percent > self.soglia_difetti else (0, 255, 0)
-        cv2.putText(result_image, f"Stato: {status_text}", (10, 120), 
-                   font, 0.7, status_color, 2)
-        
-        return result_image, combined_mask, total_percent
+        return segmented_img, regions
