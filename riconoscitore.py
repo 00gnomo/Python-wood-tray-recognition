@@ -7,6 +7,33 @@ import os
 import sys
 import threading
 import time
+<<<<<<< Updated upstream
+=======
+import cv2
+import RPi.GPIO as GPIO  # Importa la libreria GPIO per Raspberry Pi
+import pygame  # Per la riproduzione di suoni
+
+# Configurazione GPIO per i LED e pulsante
+LED_VERDE = 17  # Pin GPIO per LED verde (OK)
+LED_ROSSO = 27  # Pin GPIO per LED rosso (Difetti)
+PULSANTE = 25   # Pin GPIO per pulsante Next
+print("FANCULO ALLE VERIFICHE DI SISTEMI W IL JIGSAW")
+def setup_gpio():
+    """Configura i pin GPIO per i LED e pulsante."""
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    
+    # Configura i pin LED come output
+    GPIO.setup(LED_VERDE, GPIO.OUT)
+    GPIO.setup(LED_ROSSO, GPIO.OUT)
+    
+    # Configura il pin pulsante come input con pull-up
+    GPIO.setup(PULSANTE, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    
+    # Inizialmente spegni entrambi i LED
+    GPIO.output(LED_VERDE, GPIO.LOW)
+    GPIO.output(LED_ROSSO, GPIO.LOW)
+>>>>>>> Stashed changes
 
 def main():
     # Verifica le dipendenze richieste
@@ -350,6 +377,7 @@ class RiconoscitoreDifetti:
         """Ferma la cattura dalla webcam."""
         self.is_capturing = False
         
+<<<<<<< Updated upstream
         # Attendi che il thread di cattura termini
         if self.capture_thread and self.capture_thread.is_alive():
             self.capture_thread.join(1.0)  # Attendi max 1 secondo
@@ -581,3 +609,11 @@ class RiconoscitoreDifetti:
                    font, 0.7, status_color, 2)
         
         return result_image, combined_mask, total_percent
+=======
+        # Spegni i LED prima di uscire
+        self.turn_off_leds()
+        self.root.destroy()
+
+
+# Esegue il programma principale se lo script viene eseguito direttamente
+>>>>>>> Stashed changes
